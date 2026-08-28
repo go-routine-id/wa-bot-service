@@ -7,6 +7,10 @@ const db = getDb();
 const COLUMNS = `id, template_id AS templateId, mode, rate_per_minute AS ratePerMinute,
   message_text AS messageText, media_path AS mediaPath, status,
   total_recipients AS totalRecipients, sent_count AS sentCount, failed_count AS failedCount,
+  (SELECT COUNT(*) FROM broadcast_recipients br
+     WHERE br.broadcast_id = broadcasts.id
+       AND br.status = 'failed'
+       AND COALESCE(br.error, '') != 'invalid number') AS retryableFailedCount,
   error, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt`;
 
 const broadcastRepository = {
