@@ -11,7 +11,7 @@ const app = express();
 app.use(express.json());
 // CORS configurable (env CORS_ORIGINS); kosong = same-origin. Dipasang sebelum route
 // supaya preflight OPTIONS lintas-origin ditangani (204) sebelum masuk routing.
-app.use(corsMiddleware());
+app.use(corsMiddleware);
 app.use('/uploads', express.static(config.uploadDir));
 app.use('/api', apiRoutes);
 
