@@ -1,7 +1,7 @@
 {
   "name": "wa-bot-broadcast",
   "version": "1.0.0",
-  "description": "WhatsApp broadcast web app menggunakan whatsapp-web.js",
+  "description": "WhatsApp broadcast web app menggunakan Baileys",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -10,18 +10,20 @@
   "keywords": [
     "whatsapp",
     "broadcast",
-    "whatsapp-web.js"
+    "baileys"
   ],
   "author": "rhyanz46",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
     "better-sqlite3": "^13.0.3",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "link-preview-js": "^3.0.0",
+    "mime-types": "^2.1.35",
     "multer": "^2.2.0",
-    "qrcode": "^1.5.4",
-    "whatsapp-web.js": "^1.34.7"
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"

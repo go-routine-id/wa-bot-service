@@ -26,8 +26,8 @@ async function main() {
   });
 }
 
-// Graceful shutdown: tutup WhatsApp client (browser Puppeteer) sebelum exit,
-// supaya Chrome orphan tidak mengunci .wwebjs_auth/session pada restart.
+// Graceful shutdown: hentikan socket Baileys sebelum exit, supaya tidak ada
+// koneksi WebSocket menggantung / sesi setengah terbuka saat restart.
 let shuttingDown = false;
 async function shutdown(signal) {
   if (shuttingDown) return;

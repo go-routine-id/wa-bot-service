@@ -1,6 +1,6 @@
 # WA Broadcast
 
-Web app broadcast WhatsApp memakai [whatsapp-web.js](https://wwebjs.dev/). Buka web → scan QR → buat template / broadcast → kirim ke daftar nomor dengan rate-limit & pilihan mode proses.
+Web app broadcast WhatsApp memakai [Baileys](https://github.com/WhiskeySockets/Baileys) (protokol WhatsApp Web multi-device langsung, tanpa browser). Buka web → scan QR → buat template / broadcast → kirim ke daftar nomor dengan rate-limit & pilihan mode proses.
 
 > ⚠️ **Risiko ban:** library ini mengotomasi WhatsApp Web (unofficial). Broadcast massal berisiko membuat nomor ter-block. Mulai dengan rate kecil (20/menit) dan mode `queue`.
 
@@ -9,6 +9,7 @@ Web app broadcast WhatsApp memakai [whatsapp-web.js](https://wwebjs.dev/). Buka 
 - Scan QR saat web pertama dibuka (session tersimpan — tidak perlu scan ulang tiap restart)
 - CRUD template broadcast (teks + opsional 1 gambar)
 - Buat broadcast: pilih template ATAU teks langsung + gambar, daftar nomor dipisah koma
+- Link preview otomatis untuk teks yang memuat URL (thumbnail link tampil, mis. Google Play)
 - Rate limit per broadcast (pesan/menit, default 20)
 - Mode proses: `queue` (antrian, satu per satu) atau `parallel` (jalan bersama, risiko ban lebih tinggi)
 - History broadcast + detail status per-recipient
@@ -16,8 +17,8 @@ Web app broadcast WhatsApp memakai [whatsapp-web.js](https://wwebjs.dev/). Buka 
 
 ## Persyaratan
 
-- Node.js v18+ (dikembangkan & diuji di v24)
-- Chromium (di-download otomatis saat install; bila script postinstall diblokir, jalankan `npx puppeteer browsers install chrome`)
+- Node.js v20+ (dikembangkan & diuji di v24) — Baileys v7 adalah ESM; dimuat via `import()` dinamis dari proyek CJS
+- Tanpa Chromium/browser (koneksi langsung via WebSocket — jauh lebih ringan dari Puppeteer)
 
 ## Menjalankan
 
