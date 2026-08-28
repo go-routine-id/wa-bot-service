@@ -1,7 +1,7 @@
 'use strict';
 
 const { HttpError } = require('../utils/httpError');
-const { validateBroadcastCreate } = require('../models/broadcast');
+const { validateBroadcastCreate, INVALID_NUMBER_ERROR } = require('../models/broadcast');
 const { parseTargets } = require('../utils/phone');
 const templateRepository = require('../repositories/templateRepository');
 const broadcastRepository = require('../repositories/broadcastRepository');
@@ -9,10 +9,53 @@ const recipientRepository = require('../repositories/recipientRepository');
 const mediaService = require('./mediaService');
 const broadcastRunner = require('./broadcastRunner');
 
+/**
+ * Inti pembuatan broadcast (dipakai create & retry):
+ * insert row → copy media → insert recipient → update counts invalid → dispatch.
+ * recipientItems: [{ number, status, error? }] (status 'pending'/'failed').
+ */
+function createCore({ templateId, mode, ratePerMinute, messageText, mediaPath, recipientItems }) {
+  const invalidCount = recipientItems.filter((item) => item.status === 'failed').length;
+
+  const broadcast = broadcastRepository.create({
+    templateId,
+    mode,
+    ratePerMinute,
+    messageText,
+    mediaPath: null,
+    totalRecipients: recipientItems.length,
+  });
+
+  // Copy media ke folder broadcast agar hapus template tidak merusak history
+  if (mediaPath) {
+    if (!mediaService.exists(mediaPath)) {
+      broadcastRepository.remove(broadcast.id);
+      throw new HttpError(400, 'File media tidak ditemukan');
+    }
+    const finalMediaPath = mediaService.copyToBroadcast(broadcast.id, mediaPath);
+    broadcastRepository.setMediaPath(broadcast.id, finalMediaPath);
+  }
+
+  recipientRepository.bulkInsert(broadcast.id, recipientItems);
+
+  if (invalidCount > 0) {
+    broadcastRepository.updateCounts(broadcast.id, 0, invalidCount);
+  }
+
+  // Dispatch sesuai mode
+  if (mode === 'parallel') {
+    broadcastRunner.spawnParallel(broadcast.id);
+  } else {
+    broadcastRunner.enqueue(broadcast.id);
+  }
+
+  return broadcastRepository.findById(broadcast.id);
+}
+
 const broadcastService = {
   /**
    * Buat broadcast: validasi → resolve pesan dari template/teks langsung →
-   * insert broadcast → copy media → insert recipient → dispatch (queue/parallel).
+   * createCore (insert/copy/recipient/dispatch).
    */
   create(body) {
     const input = validateBroadcastCreate(body);
@@ -32,46 +75,57 @@ const broadcastService = {
       mediaPath = template.mediaPath;
     }
 
-    const totalRecipients = valid.length + invalid.length;
+    // Recipient: nomor valid → pending; nomor invalid → failed (transparan di history)
+    const recipientItems = [
+      ...valid.map((n) => ({ number: n, status: 'pending' })),
+      ...invalid.map((n) => ({ number: n, status: 'failed', error: INVALID_NUMBER_ERROR })),
+    ];
 
-    const broadcast = broadcastRepository.create({
+    return createCore({
       templateId,
       mode: input.mode,
       ratePerMinute: input.ratePerMinute,
       messageText,
-      mediaPath: null,
-      totalRecipients,
+      mediaPath,
+      recipientItems,
+    });
+  },
+
+  /**
+   * Kirim ulang recipient yang gagal dari broadcast `id`: buat broadcast BARU
+   * yang hanya berisi nomor berstatus 'failed' (nomor terkirim TIDAK pernah di-resend).
+   * History broadcast asli tetap utuh; retry tampil sebagai entri baru yang transparan.
+   */
+  retry(id) {
+    const source = broadcastRepository.findById(id);
+    if (!source) throw new HttpError(404, 'Broadcast tidak ditemukan');
+
+    // Hanya send-failure yang di-retry; nomor format-invalid ("invalid number")
+    // tidak mungkin berhasil, jadi tidak ikut dibawa.
+    const failedRecipients = recipientRepository
+      .findByBroadcastId(id)
+      .filter((r) => r.status === 'failed' && r.error !== INVALID_NUMBER_ERROR);
+
+    if (failedRecipients.length === 0) {
+      throw new HttpError(400, 'Tidak ada recipient gagal terkirim yang bisa dikirim ulang');
+    }
+
+    const broadcast = createCore({
+      templateId: source.templateId,
+      mode: source.mode,
+      ratePerMinute: source.ratePerMinute,
+      messageText: source.messageText,
+      mediaPath: source.mediaPath,
+      recipientItems: failedRecipients.map((r) => ({
+        number: r.recipientNumber,
+        status: 'pending',
+      })),
     });
 
-    // Copy media ke folder broadcast agar hapus template tidak merusak history
-    if (mediaPath) {
-      if (!mediaService.exists(mediaPath)) {
-        broadcastRepository.remove(broadcast.id);
-        throw new HttpError(400, 'File media tidak ditemukan');
-      }
-      const finalMediaPath = mediaService.copyToBroadcast(broadcast.id, mediaPath);
-      broadcastRepository.setMediaPath(broadcast.id, finalMediaPath);
-    }
-
-    // Recipient: nomor valid → pending; nomor invalid → failed (transparan di history)
-    const items = [
-      ...valid.map((n) => ({ number: n, status: 'pending' })),
-      ...invalid.map((n) => ({ number: n, status: 'failed', error: 'invalid number' })),
-    ];
-    recipientRepository.bulkInsert(broadcast.id, items);
-
-    if (invalid.length > 0) {
-      broadcastRepository.updateCounts(broadcast.id, 0, invalid.length);
-    }
-
-    // Dispatch sesuai mode
-    if (input.mode === 'parallel') {
-      broadcastRunner.spawnParallel(broadcast.id);
-    } else {
-      broadcastRunner.enqueue(broadcast.id);
-    }
-
-    return broadcastRepository.findById(broadcast.id);
+    console.log(
+      `[retry] #${id} → #${broadcast.id} (${failedRecipients.length} penerima gagal dikirim ulang)`
+    );
+    return broadcast;
   },
 
   list({ limit, offset } = {}) {

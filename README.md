@@ -13,6 +13,7 @@ Web app broadcast WhatsApp memakai [Baileys](https://github.com/WhiskeySockets/B
 - Rate limit per broadcast (pesan/menit, default 20)
 - Mode proses: `queue` (antrian, satu per satu) atau `parallel` (jalan bersama, risiko ban lebih tinggi)
 - History broadcast + detail status per-recipient
+- Tombol "Kirim ulang yang gagal" — buat broadcast baru hanya dari nomor yang gagal terkirim
 - REST API + SQLite (better-sqlite3), arsitektur MVC clean
 
 ## Persyaratan
@@ -58,6 +59,7 @@ db/migrations/     # skema SQLite
 | POST | `/api/broadcasts` | buat broadcast `{ mode, ratePerMinute, recipients, templateId?|messageText?, mediaPath? }` |
 | GET | `/api/broadcasts` · `/api/broadcasts/:id` | history + detail per-recipient |
 | POST | `/api/broadcasts/:id/cancel` | batalkan broadcast |
+| POST | `/api/broadcasts/:id/retry` | kirim ulang recipient yang gagal (buat broadcast baru, nomor terkirim tidak di-resend) |
 
 ## Catatan
 

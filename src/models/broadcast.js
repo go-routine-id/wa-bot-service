@@ -7,6 +7,9 @@ const BROADCAST_MODES = ['queue', 'parallel'];
 const BROADCAST_STATUSES = ['pending', 'running', 'completed', 'failed', 'cancelled'];
 const RECIPIENT_STATUSES = ['pending', 'sending', 'sent', 'failed', 'skipped'];
 
+/** Error yang ditulis ke recipient saat nomor gagal parsing (bukan kegagalan kirim). */
+const INVALID_NUMBER_ERROR = 'invalid number';
+
 /**
  * Validasi input create broadcast.
  * body: { mode, ratePerMinute, recipients, templateId?, messageText?, mediaPath? }
@@ -58,5 +61,6 @@ module.exports = {
   BROADCAST_MODES,
   BROADCAST_STATUSES,
   RECIPIENT_STATUSES,
+  INVALID_NUMBER_ERROR,
   validateBroadcastCreate,
 };

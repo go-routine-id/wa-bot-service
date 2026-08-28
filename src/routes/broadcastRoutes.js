@@ -9,5 +9,6 @@ router.post('/', broadcastController.create);
 router.get('/', broadcastController.list);
 router.get('/:id', broadcastController.detail);
 router.post('/:id/cancel', broadcastController.cancel);
+router.post('/:id/retry', broadcastController.retry);
 
 module.exports = router;

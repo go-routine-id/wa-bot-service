@@ -78,6 +78,9 @@ const History = (() => {
         <td>${b.createdAt}</td>
         <td>
           <button class="btn small" onclick="History.openDetail(${b.id})">Detail</button>
+          ${b.failedCount > 0 && ['completed', 'failed'].includes(b.status)
+            ? `<button class="btn small" onclick="History.retryFailed(${b.id}, ${b.failedCount})">Retry gagal (${b.failedCount})</button>`
+            : ''}
           ${['pending', 'running'].includes(b.status)
             ? `<button class="btn small danger" onclick="History.cancel(${b.id})">Cancel</button>`
             : ''}
@@ -125,11 +128,16 @@ const History = (() => {
       )
       .join('');
 
+    const canRetry = counts.failed > 0 && ['completed', 'failed'].includes(b.status);
+
     el.classList.remove('hidden');
     el.innerHTML = `
       <div class="detail-head">
         <button class="btn small" onclick="History.closeDetail()">← Kembali</button>
         <h3>Broadcast #${b.id} <span class="badge badge-${b.status}">${b.status}</span></h3>
+        ${canRetry
+          ? `<button class="btn small" onclick="History.retryFailed(${b.id}, ${counts.failed})">Kirim ulang yang gagal (${counts.failed})</button>`
+          : ''}
       </div>
       <div class="progress"><div class="progress-bar" style="width:${pct}%"></div></div>
       <p class="muted">
@@ -163,7 +171,20 @@ const History = (() => {
     }
   }
 
-  return { load, openDetail, closeDetail, cancel };
+  /** Buat broadcast baru dari recipient yang gagal pada broadcast #id (nomor terkirim tidak di-resend). */
+  async function retryFailed(id, count) {
+    if (!confirm(`Kirim ulang ${count} pesan yang gagal dari broadcast #${id}? Broadcast baru akan dibuat; nomor yang sudah terkirim tidak dikirim ulang.`)) return;
+    try {
+      const created = await API.post(`/api/broadcasts/${id}/retry`);
+      toast(`Broadcast retry #${created.id} dibuat (${created.totalRecipients} penerima)`, 'ok');
+      await load();
+      if (activeId === id) await openDetail(id);
+    } catch (err) {
+      toast(err.message, 'error');
+    }
+  }
+
+  return { load, openDetail, closeDetail, cancel, retryFailed };
 })();
 
 window.History = History;

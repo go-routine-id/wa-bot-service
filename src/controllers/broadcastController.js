@@ -28,6 +28,11 @@ const broadcastController = {
     const data = broadcastService.cancel(Number(req.params.id));
     res.json({ data });
   },
+
+  retry(req, res) {
+    const data = broadcastService.retry(Number(req.params.id));
+    res.status(201).json({ data });
+  },
 };
 
 module.exports = broadcastController;
