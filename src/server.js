@@ -6,18 +6,23 @@ const config = require('../config');
 const { getDb } = require('../config/database');
 getDb();
 
+// Migrasi auth legacy (authDir/creds.json → authDir/utama) harus selesai
+// SEBELUM startAll() supaya sesi lama otomatis ter-load sebagai 'utama'.
+const { migrateLegacyAuth } = require('./utils/legacyAuthMigration');
+migrateLegacyAuth();
+
 const whatsappService = require('./services/whatsappService');
 const broadcastService = require('./services/broadcastService');
 const broadcastRunner = require('./services/broadcastRunner');
 const app = require('./app');
 
 async function main() {
-  // WhatsApp client: fire-and-forget, status 'qr'/'connected' muncul async
-  whatsappService.start().catch((err) => {
-    console.error('[boot] whatsapp start error:', err);
-  });
+  // Start semua sesi yang punya creds tersimpan (fire-and-forget, status
+  // 'connected' muncul async). Sesi tanpa creds tidak di-start (anti pairing-loop).
+  whatsappService.startAll();
 
-  // Pulihkan broadcast yang tertinggal saat restart, lalu nyalakan queue worker
+  // Pulihkan broadcast yang tertinggal saat restart, lalu nyalakan queue worker.
+  // startAll() harus jalan DULU: runner menunggu koneksi per-sesi saat recovery.
   broadcastService.recoverInProgress();
   broadcastRunner.startQueueWorker();
 
@@ -26,7 +31,7 @@ async function main() {
   });
 }
 
-// Graceful shutdown: hentikan socket Baileys sebelum exit, supaya tidak ada
+// Graceful shutdown: hentikan semua socket Baileys sebelum exit, supaya tidak ada
 // koneksi WebSocket menggantung / sesi setengah terbuka saat restart.
 let shuttingDown = false;
 async function shutdown(signal) {
@@ -34,7 +39,7 @@ async function shutdown(signal) {
   shuttingDown = true;
   console.log(`[shutdown] ${signal} — menutup WhatsApp client…`);
   try {
-    await whatsappService.destroy();
+    await whatsappService.destroyAll();
   } catch (err) {
     console.error('[shutdown] error destroy:', err);
   }

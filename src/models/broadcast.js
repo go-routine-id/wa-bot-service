@@ -12,7 +12,7 @@ const INVALID_NUMBER_ERROR = 'invalid number';
 
 /**
  * Validasi input create broadcast.
- * body: { mode, ratePerMinute, recipients, templateId?, messageText?, mediaPath? }
+ * body: { mode, ratePerMinute, sessionId, recipients, templateId?, messageText?, mediaPath? }
  * Mengembalikan object yang sudah dinormalisasi, atau melempar HttpError 400.
  */
 function validateBroadcastCreate(body) {
@@ -32,6 +32,10 @@ function validateBroadcastCreate(body) {
   const recipients = String(body?.recipients ?? '').trim();
   if (!recipients) throw new HttpError(400, 'Daftar nomor tujuan wajib diisi');
 
+  // Multi-session: tiap broadcast wajib memilih satu sesi pengirim.
+  const sessionId = body?.sessionId != null ? String(body.sessionId).trim() : '';
+  if (!sessionId) throw new HttpError(400, 'sessionId wajib diisi (pilih sesi pengirim)');
+
   const templateId = body?.templateId ? Number.parseInt(body.templateId, 10) : null;
   const hasTemplate = Number.isInteger(templateId) && templateId > 0;
   const messageText = body?.messageText != null ? String(body.messageText).trim() : '';
@@ -50,6 +54,7 @@ function validateBroadcastCreate(body) {
   return {
     mode,
     ratePerMinute,
+    sessionId,
     recipients,
     templateId: hasTemplate ? templateId : null,
     messageText: hasTemplate ? null : messageText,

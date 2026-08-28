@@ -4,34 +4,45 @@ const { getDb } = require('../../config/database');
 
 const db = getDb();
 
-const COLUMNS = `id, template_id AS templateId, mode, rate_per_minute AS ratePerMinute,
-  message_text AS messageText, media_path AS mediaPath, status,
-  total_recipients AS totalRecipients, sent_count AS sentCount, failed_count AS failedCount,
+const COLUMNS = `b.id, b.template_id AS templateId, b.mode, b.rate_per_minute AS ratePerMinute,
+  b.message_text AS messageText, b.media_path AS mediaPath, b.status,
+  b.total_recipients AS totalRecipients, b.sent_count AS sentCount, b.failed_count AS failedCount,
+  b.session_id AS sessionId, s.name AS sessionName,
   (SELECT COUNT(*) FROM broadcast_recipients br
-     WHERE br.broadcast_id = broadcasts.id
+     WHERE br.broadcast_id = b.id
        AND br.status = 'failed'
        AND COALESCE(br.error, '') != 'invalid number') AS retryableFailedCount,
-  error, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt`;
+  b.error, b.created_at AS createdAt, b.started_at AS startedAt, b.finished_at AS finishedAt`;
+
+const FROM = `FROM broadcasts b LEFT JOIN sessions s ON s.id = b.session_id`;
 
 const broadcastRepository = {
-  create({ templateId = null, mode, ratePerMinute, messageText, mediaPath = null, totalRecipients }) {
+  create({
+    templateId = null,
+    sessionId = null,
+    mode,
+    ratePerMinute,
+    messageText,
+    mediaPath = null,
+    totalRecipients,
+  }) {
     const info = db
       .prepare(
         `INSERT INTO broadcasts
-           (template_id, mode, rate_per_minute, message_text, media_path, total_recipients)
-         VALUES (?, ?, ?, ?, ?, ?)`
+           (template_id, session_id, mode, rate_per_minute, message_text, media_path, total_recipients)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(templateId, mode, ratePerMinute, messageText, mediaPath, totalRecipients);
+      .run(templateId, sessionId, mode, ratePerMinute, messageText, mediaPath, totalRecipients);
     return this.findById(info.lastInsertRowid);
   },
 
   findById(id) {
-    return db.prepare(`SELECT ${COLUMNS} FROM broadcasts WHERE id = ?`).get(id) ?? null;
+    return db.prepare(`SELECT ${COLUMNS} ${FROM} WHERE b.id = ?`).get(id) ?? null;
   },
 
   list({ limit = 50, offset = 0 } = {}) {
     return db
-      .prepare(`SELECT ${COLUMNS} FROM broadcasts ORDER BY id DESC LIMIT ? OFFSET ?`)
+      .prepare(`SELECT ${COLUMNS} ${FROM} ORDER BY b.id DESC LIMIT ? OFFSET ?`)
       .all(limit, offset);
   },
 
@@ -76,9 +87,9 @@ const broadcastRepository = {
     return (
       db
         .prepare(
-          `SELECT ${COLUMNS} FROM broadcasts
-           WHERE mode = 'queue' AND status = 'pending'
-           ORDER BY id ASC LIMIT 1`
+          `SELECT ${COLUMNS} ${FROM}
+           WHERE b.mode = 'queue' AND b.status = 'pending'
+           ORDER BY b.id ASC LIMIT 1`
         )
         .get() ?? null
     );
@@ -88,11 +99,24 @@ const broadcastRepository = {
   findRecoverable() {
     return db
       .prepare(
-        `SELECT ${COLUMNS} FROM broadcasts
-         WHERE status IN ('running','pending')
-         ORDER BY id ASC`
+        `SELECT ${COLUMNS} ${FROM}
+         WHERE b.status IN ('running','pending')
+         ORDER BY b.id ASC`
       )
       .all();
+  },
+
+  /** Broadcast milik satu sesi dengan status tertentu (dipakai cancelForSession). */
+  findBySessionAndStatus(sessionId, statuses) {
+    if (statuses.length === 0) return [];
+    const placeholders = statuses.map(() => '?').join(',');
+    return db
+      .prepare(
+        `SELECT ${COLUMNS} ${FROM}
+         WHERE b.session_id = ? AND b.status IN (${placeholders})
+         ORDER BY b.id ASC`
+      )
+      .all(sessionId, ...statuses);
   },
 
   /** Set media_path (dipakai setelah media di-copy ke folder broadcast). */

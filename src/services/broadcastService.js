@@ -8,17 +8,19 @@ const broadcastRepository = require('../repositories/broadcastRepository');
 const recipientRepository = require('../repositories/recipientRepository');
 const mediaService = require('./mediaService');
 const broadcastRunner = require('./broadcastRunner');
+const whatsappService = require('./whatsappService');
 
 /**
  * Inti pembuatan broadcast (dipakai create & retry):
  * insert row → copy media → insert recipient → update counts invalid → dispatch.
  * recipientItems: [{ number, status, error? }] (status 'pending'/'failed').
  */
-function createCore({ templateId, mode, ratePerMinute, messageText, mediaPath, recipientItems }) {
+function createCore({ templateId, sessionId, mode, ratePerMinute, messageText, mediaPath, recipientItems }) {
   const invalidCount = recipientItems.filter((item) => item.status === 'failed').length;
 
   const broadcast = broadcastRepository.create({
     templateId,
+    sessionId,
     mode,
     ratePerMinute,
     messageText,
@@ -59,6 +61,11 @@ const broadcastService = {
    */
   create(body) {
     const input = validateBroadcastCreate(body);
+    // Sesi pengirim wajib ADA (bukan sekadar string non-empty) — cegah broadcast
+    // mengarah ke sesi yang sudah dihapus / tidak pernah ada.
+    if (!whatsappService.sessionExists(input.sessionId)) {
+      throw new HttpError(400, 'Sesi pengirim tidak ditemukan');
+    }
     const { valid, invalid } = parseTargets(input.recipients);
     if (valid.length + invalid.length === 0) {
       throw new HttpError(400, 'Tidak ada nomor tujuan yang valid');
@@ -83,6 +90,7 @@ const broadcastService = {
 
     return createCore({
       templateId,
+      sessionId: input.sessionId,
       mode: input.mode,
       ratePerMinute: input.ratePerMinute,
       messageText,
@@ -100,6 +108,15 @@ const broadcastService = {
     const source = broadcastRepository.findById(id);
     if (!source) throw new HttpError(404, 'Broadcast tidak ditemukan');
 
+    // Broadcast legacy (pra-multi-session) tidak punya sesi pengirim yang jelas —
+    // memilih sesi adalah keputusan user, jadi eksplisit minta buat broadcast baru.
+    if (!source.sessionId) {
+      throw new HttpError(
+        400,
+        'Broadcast lama tidak punya sesi pengirim — buat broadcast baru dan pilih sesi.'
+      );
+    }
+
     // Hanya send-failure yang di-retry; nomor format-invalid ("invalid number")
     // tidak mungkin berhasil, jadi tidak ikut dibawa.
     const failedRecipients = recipientRepository
@@ -112,6 +129,7 @@ const broadcastService = {
 
     const broadcast = createCore({
       templateId: source.templateId,
+      sessionId: source.sessionId, // retry mewarisi sesi pengirim broadcast asal
       mode: source.mode,
       ratePerMinute: source.ratePerMinute,
       messageText: source.messageText,
@@ -150,6 +168,23 @@ const broadcastService = {
     recipientRepository.bulkUpdateStatus(id, ['pending', 'sending'], 'skipped', 'Dibatalkan pengguna');
     broadcastRepository.markCancelled(id, broadcast.sentCount, broadcast.failedCount);
     return broadcastRepository.findById(id);
+  },
+
+  /**
+   * Batalkan SEMUA broadcast pending/running milik satu sesi (dipakai saat sesi
+   * dihapus). Dipanggil sessionController SEBELUM whatsappService.deleteSession —
+   * urutan ini mencegah circular dependency whatsapp → broadcast.
+   */
+  cancelForSession(sessionId, errorMsg = 'Sesi pengirim dihapus') {
+    const running = broadcastRepository.findBySessionAndStatus(sessionId, ['pending', 'running']);
+    for (const b of running) {
+      broadcastRunner.setCancelled(b.id, true);
+      recipientRepository.bulkUpdateStatus(b.id, ['pending', 'sending'], 'skipped', errorMsg);
+      broadcastRepository.markCancelled(b.id, b.sentCount, b.failedCount);
+    }
+    if (running.length) {
+      console.log(`[session] batalkan ${running.length} broadcast sesi "${sessionId}"`);
+    }
   },
 
   /**

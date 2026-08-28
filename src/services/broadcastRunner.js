@@ -28,12 +28,17 @@ function delayForRate(ratePerMinute) {
   return Math.floor(60000 / ratePerMinute);
 }
 
-/** Tunggu hingga WhatsApp terhubung (maks timeoutMs). Kembalikan false bila cancel/timeout. */
-async function waitForConnection(broadcastId, timeoutMs) {
+/**
+ * Tunggu hingga sesi pengirim broadcast terhubung (maks timeoutMs).
+ * Kembalikan false bila cancel / sesi dihapus / timeout.
+ * Terima object `broadcast` agar bisa cek sessionId (fail-fast bila sesi hilang).
+ */
+async function waitForConnection(broadcast, timeoutMs) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    if (isCancelled(broadcastId)) return false;
-    if (whatsappService.isConnected()) return true;
+    if (isCancelled(broadcast.id)) return false;
+    if (!whatsappService.sessionExists(broadcast.sessionId)) return false; // sesi dihapus → fail cepat
+    if (whatsappService.isConnected(broadcast.sessionId)) return true;
     await sleep(1000);
   }
   return false;
@@ -48,17 +53,21 @@ async function processRecipient(broadcast, recipient) {
 
   if (isCancelled(broadcast.id)) return 'stopped';
 
-  const connected = await waitForConnection(broadcast.id, 2 * 60 * 1000);
+  const connected = await waitForConnection(broadcast, 2 * 60 * 1000);
   if (!connected) {
     if (isCancelled(broadcast.id)) return 'stopped';
-    recipientRepository.updateStatus(recipient.id, { status: 'failed', error: 'WhatsApp tidak terhubung' });
+    // Bedakan: sesi dihapus vs sesi ada tapi putus → pesan failed yang jelas.
+    const msg = whatsappService.sessionExists(broadcast.sessionId)
+      ? 'WhatsApp tidak terhubung'
+      : 'Sesi pengirim tidak ditemukan';
+    recipientRepository.updateStatus(recipient.id, { status: 'failed', error: msg });
     return 'fatal';
   }
   if (isCancelled(broadcast.id)) return 'stopped';
 
   recipientRepository.updateStatus(recipient.id, { status: 'sending' });
   try {
-    await whatsappService.sendMessage(toChatId(recipient.recipientNumber), {
+    await whatsappService.sendMessage(broadcast.sessionId, toChatId(recipient.recipientNumber), {
       text: broadcast.messageText,
       mediaPath: broadcast.mediaPath,
     });
@@ -80,6 +89,9 @@ async function processRecipient(broadcast, recipient) {
 async function runBroadcast(broadcastId) {
   let broadcast = broadcastRepository.findById(broadcastId);
   if (!broadcast) return;
+
+  // Broadcast legacy (pra-multi-session, session_id NULL) → kirim via sesi 'utama'.
+  broadcast.sessionId = broadcast.sessionId || 'utama';
 
   if (isCancelled(broadcast.id)) return;
 
