@@ -122,6 +122,19 @@ async function runBroadcast(broadcastId) {
   if (!fresh || fresh.status === 'cancelled') return;
 
   if (fatal) {
+    // Recipient yang memicu fatal sudah di-mark 'failed' oleh processRecipient
+    // tapi tidak masuk hitungan loop → tambahkan manual supaya count akurat.
+    failedCount += 1;
+    // Sisa recipient yang masih 'pending' ikut di-mark 'failed' — sebelumnya
+    // mereka selamanya stuck di 'pending' (retry & recovery hanya memproses
+    // status 'failed') sehingga tidak pernah bisa dikirim ulang. Dengan ini
+    // tombol "Kirim ulang yang gagal" menangkapnya.
+    failedCount += recipientRepository.bulkUpdateStatus(
+      broadcast.id,
+      ['pending', 'sending'],
+      'failed',
+      'Broadcast dihentikan karena koneksi putus'
+    );
     broadcastRepository.markFailed(
       broadcast.id,
       'WhatsApp tidak terhubung saat broadcast berjalan',

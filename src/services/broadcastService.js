@@ -117,6 +117,17 @@ const broadcastService = {
       );
     }
 
+    // Sesi pengirim asal sudah dihapus → retry mustahil berhasil (runner fail-fast
+    // "Sesi pengirim tidak ditemukan"); tolak di awal, sejalan dengan create().
+    // Jalur normal sebenarnya sudah di-cover FK ON DELETE SET NULL (session_id
+    // menjadi NULL → kena guard legacy di atas); ini defense-in-depth.
+    if (!whatsappService.sessionExists(source.sessionId)) {
+      throw new HttpError(
+        400,
+        'Sesi pengirim tidak ditemukan — buat broadcast baru dan pilih sesi pengirim.'
+      );
+    }
+
     // Hanya send-failure yang di-retry; nomor format-invalid ("invalid number")
     // tidak mungkin berhasil, jadi tidak ikut dibawa.
     const failedRecipients = recipientRepository
