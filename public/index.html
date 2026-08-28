@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WA Broadcast</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">📣 WA Broadcast</div>
+    <nav class="tabs">
+      <button class="tab-btn active" data-tab="connection">Koneksi</button>
+      <button class="tab-btn" data-tab="create">Buat Broadcast</button>
+      <button class="tab-btn" data-tab="templates">Template</button>
+      <button class="tab-btn" data-tab="history">History</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ============ Koneksi ============ -->
+    <section id="tab-connection" class="tab-section active">
+      <h2>Koneksi WhatsApp</h2>
+      <div id="conn-content">Memuat…</div>
+    </section>
+
+    <!-- ============ Buat Broadcast ============ -->
+    <section id="tab-create" class="tab-section">
+      <h2>Buat Broadcast</h2>
+      <form id="bc-form" onsubmit="event.preventDefault(); Broadcast.submit();">
+        <fieldset>
+          <legend>Sumber pesan</legend>
+          <label class="radio"><input type="radio" name="bc-source" value="template" checked onchange="Broadcast.toggleSource()"> Pakai template</label>
+          <label class="radio"><input type="radio" name="bc-source" value="direct" onchange="Broadcast.toggleSource()"> Tulis langsung</label>
+        </fieldset>
+
+        <div id="bc-template-wrap">
+          <label for="bc-template">Pilih template</label>
+          <select id="bc-template" onchange="Broadcast.previewTemplate()"></select>
+          <div id="bc-template-preview" class="muted"></div>
+        </div>
+
+        <div id="bc-direct-wrap" class="hidden">
+          <label for="bc-message">Pesan langsung</label>
+          <textarea id="bc-message" rows="4" placeholder="Isi pesan broadcast…"></textarea>
+          <label for="bc-image">Gambar (opsional)</label>
+          <input type="file" id="bc-image" accept="image/*">
+        </div>
+
+        <label for="bc-recipients">Nomor tujuan (pisahkan dengan koma)</label>
+        <textarea id="bc-recipients" rows="4" placeholder="6281234567890, 6289876543210, ..."></textarea>
+
+        <div class="row">
+          <div class="col">
+            <label for="bc-mode">Mode proses</label>
+            <select id="bc-mode">
+              <option value="queue">Antrian (queue) — diproses satu per satu, lebih aman</option>
+              <option value="parallel">Jalan bersama (parallel) — lebih cepat, risiko ban lebih tinggi</option>
+            </select>
+          </div>
+          <div class="col">
+            <label for="bc-rate">Rate (pesan per menit)</label>
+            <input type="number" id="bc-rate" min="1" max="3600" value="20">
+          </div>
+        </div>
+
+        <button type="submit" class="btn primary">Kirim Broadcast</button>
+      </form>
+    </section>
+
+    <!-- ============ Template ============ -->
+    <section id="tab-templates" class="tab-section">
+      <h2>Template Broadcast</h2>
+
+      <div class="card">
+        <h3 id="tpl-form-title">Buat Template Baru</h3>
+        <form id="tpl-form" onsubmit="event.preventDefault(); Templates.save();">
+          <input type="hidden" id="tpl-id">
+          <label for="tpl-name">Nama template</label>
+          <input type="text" id="tpl-name" placeholder="cth: Promo Agustus">
+          <label for="tpl-text">Isi pesan</label>
+          <textarea id="tpl-text" rows="4" placeholder="Isi pesan template…"></textarea>
+          <label for="tpl-image">Gambar (opsional)</label>
+          <input type="file" id="tpl-image" accept="image/*">
+          <div id="tpl-image-preview" class="muted"></div>
+          <div class="row actions">
+            <button type="submit" class="btn primary">Simpan Template</button>
+            <button type="button" class="btn" id="tpl-cancel-edit" onclick="Templates.clearForm()">Batal</button>
+          </div>
+        </form>
+      </div>
+
+      <div id="tpl-list">Memuat…</div>
+    </section>
+
+    <!-- ============ History ============ -->
+    <section id="tab-history" class="tab-section">
+      <h2>History Broadcast</h2>
+      <div id="hist-detail" class="hidden"></div>
+      <div id="hist-list">Memuat…</div>
+    </section>
+  </main>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/app.js"></script>
+  <script src="/js/connection.js"></script>
+  <script src="/js/templates.js"></script>
+  <script src="/js/broadcast.js"></script>
+  <script src="/js/history.js"></script>
+</body>
+</html>
