@@ -7,7 +7,8 @@ const QRCode = require('qrcode');
 const config = require('../../config');
 
 const state = {
-  status: 'uninitialized', // uninitialized | connecting | qr | connected | disconnected | auth_failure
+  // uninitialized | connecting | qr | connected | disconnected | auth_failure | qr_expired
+  status: 'uninitialized',
   qrDataUrl: null,
   qrExpiresAt: null,
   userInfo: null,
@@ -20,8 +21,10 @@ let baileys = null;
 let pino = null;
 let starting = null;       // promise start() berjalan (cegah race membuat 2 socket)
 let reconnectTimer = null; // timer auto-reconnect backoff
+let qrExpiryTimer = null;  // timer: QR tak ter-scan & tak di-refresh → qr_expired (hentikan pairing)
 let reconnectAttempts = 0;
 let stopReconnect = false; // true saat destroy/logout; false saat rescan/start ulang
+let wasConnected = false;  // socket lifecycle ini pernah 'connected'? → kunci blip recovery
 
 const RECONNECT_DELAYS = [3000, 5000, 10000, 20000, 30000]; // ms; cap 30s, ulang terus
 
@@ -59,6 +62,41 @@ function clearReconnect() {
   reconnectAttempts = 0;
 }
 
+function clearQrExpiry() {
+  if (qrExpiryTimer) {
+    clearTimeout(qrExpiryTimer);
+    qrExpiryTimer = null;
+  }
+}
+
+/**
+ * Jendela validitas QR: bila tak ter-scan dan tak di-refresh Baileys dalam
+ * 25 detik → pindah ke qr_expired + hentikan socket. QR TIDAK tampil lagi,
+ * hanya tombol manual. QR baru hanya muncul saat user request ulang.
+ */
+function scheduleQrExpiry() {
+  clearQrExpiry();
+  qrExpiryTimer = setTimeout(() => {
+    qrExpiryTimer = null;
+    if (state.status !== 'qr') return; // sudah discan / state berubah → abaikan
+    const sock = state.sock;
+    console.log('[wa] QR kedaluwarsa (tidak discan) — pairing dihentikan, tunggu request manual.');
+    state.status = 'qr_expired';
+    state.qrDataUrl = null;
+    state.qrExpiresAt = null;
+    state.lastError = 'QR kedaluwarsa — klik "Request QR baru" untuk membuat QR baru.';
+    state.sock = null;
+    wasConnected = false;
+    if (sock) {
+      try {
+        sock.end();
+      } catch (_) {
+        // abaikan — socket mungkin sudah mati
+      }
+    }
+  }, 25000);
+}
+
 function scheduleReconnect() {
   if (stopReconnect || reconnectTimer) return;
   const delay = RECONNECT_DELAYS[Math.min(reconnectAttempts, RECONNECT_DELAYS.length - 1)];
@@ -91,11 +129,14 @@ async function handleConnectionUpdate(update, sock) {
       state.qrDataUrl = null;
     }
     state.qrExpiresAt = Date.now() + 25000; // QR regenerasi ~30 detik
+    scheduleQrExpiry(); // reset jendela validitas tiap QR baru dari Baileys
     return;
   }
 
   if (update.connection === 'open') {
     clearReconnect();
+    clearQrExpiry(); // sudah terhubung, QR tak perlu lagi
+    wasConnected = true; // lifecycle socket ini pernah terhubung → blip boleh auto-recover
     const user = sock.user;
     state.status = 'connected';
     state.qrDataUrl = null;
@@ -117,6 +158,7 @@ async function handleConnectionUpdate(update, sock) {
       update.lastDisconnect?.error?.output?.payload?.message ||
       'connection closed';
     console.log('[wa] koneksi ditutup (statusCode:', statusCode + ')', reason);
+    clearQrExpiry();
     state.userInfo = null;
 
     // Fatal & permanen: sesi invalid/di-logout → minta scan ulang, berhenti reconnect.
@@ -135,11 +177,23 @@ async function handleConnectionUpdate(update, sock) {
       return;
     }
 
-    // Transient (connectionClosed=428, connectionLost=408, dll.) → disconnected + auto-reconnect.
-    state.status = 'disconnected';
-    state.lastError = reason;
+    // Transient (connectionClosed=428, connectionLost=408, dll.).
+    // Kalau lifecycle ini pernah connected → blip jaringan, 1× auto-reconnect pakai
+    // sesi tersimpan (tidak bikin pairing baru, aman). Kalau belum pernah connected
+    // (fase QR / belum ter-pair) → JANGAN auto-reconnect: loop 408→QR baru = percobaan
+    // pairing berulang ke server WhatsApp (risiko banned). Serahkan ke tombol manual.
+    state.status = wasConnected ? 'disconnected' : 'qr_expired';
+    state.qrDataUrl = null; // pastikan QR tak tampil di state expired
+    state.qrExpiresAt = null;
+    state.lastError = wasConnected
+      ? reason
+      : 'QR kedaluwarsa / pairing terputus otomatis — klik "Request QR baru" untuk membuat QR baru.';
     state.sock = null;
-    scheduleReconnect();
+    if (wasConnected) {
+      scheduleReconnect();
+    } else {
+      clearReconnect();
+    }
   }
 }
 
@@ -160,6 +214,7 @@ function start() {
       logger: quietLogger(),
     });
     state.sock = sock;
+    wasConnected = false; // lifecycle socket baru dimulai belum pernah connected
     state.status = 'connecting';
     state.lastError = null;
 
@@ -200,6 +255,8 @@ async function destroy() {
   const sock = state.sock;
   stopReconnect = true;
   clearReconnect();
+  clearQrExpiry();
+  wasConnected = false;
   state.sock = null;
   state.status = 'uninitialized';
   state.qrDataUrl = null;
@@ -237,6 +294,8 @@ async function logout() {
   const sock = state.sock;
   stopReconnect = true;
   clearReconnect();
+  clearQrExpiry();
+  wasConnected = false;
   state.sock = null;
   if (sock) {
     try {
