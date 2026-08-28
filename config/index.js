@@ -14,6 +14,11 @@ const config = {
   defaultRatePerMinute: parseInt(process.env.DEFAULT_RATE_PER_MINUTE || '20', 10),
   maxRatePerMinute: parseInt(process.env.MAX_RATE_PER_MINUTE || '3600', 10),
   maxUploadSize: parseInt(process.env.MAX_UPLOAD_SIZE || String(5 * 1024 * 1024), 10),
+  // Origin web yang diizinkan CORS (comma-separated); kosong = same-origin
+  corsOrigins: (process.env.CORS_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
 };
 
 module.exports = config;

@@ -1,7 +1,7 @@
 {
-  "name": "wa-bot-broadcast",
+  "name": "wa-bot-service",
   "version": "1.0.0",
-  "description": "WhatsApp broadcast web app menggunakan Baileys",
+  "description": "Backend WhatsApp bot: REST API + session Baileys, broadcast dengan rate-limit & mode proses",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
@@ -9,11 +9,11 @@
   },
   "keywords": [
     "whatsapp",
-    "broadcast",
-    "baileys"
+    "baileys",
+    "bot"
   ],
   "author": "rhyanz46",
-  "license": "ISC",
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@whiskeysockets/baileys": "7.0.0-rc14",

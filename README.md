@@ -1,35 +1,46 @@
-# WA Broadcast
+# WA Bot Service
 
-Web app broadcast WhatsApp memakai [Baileys](https://github.com/WhiskeySockets/Baileys) (protokol WhatsApp Web multi-device langsung, tanpa browser). Buka web → scan QR → buat template / broadcast → kirim ke daftar nomor dengan rate-limit & pilihan mode proses.
+Backend REST API untuk WhatsApp bot memakai [Baileys](https://github.com/WhiskeySockets/Baileys) (protokol WhatsApp Web multi-device langsung, tanpa browser) — scan QR → buat template / broadcast → kirim ke daftar nomor dengan rate-limit & pilihan mode proses.
+
+Frontend web ada di repo terpisah: [**wa-bot-web**](https://github.com/go-routine-id/wa-bot-web).
 
 > ⚠️ **Risiko ban:** library ini mengotomasi WhatsApp Web (unofficial). Broadcast massal berisiko membuat nomor ter-block. Mulai dengan rate kecil (20/menit) dan mode `queue`.
 
 ## Fitur
 
-- Scan QR saat web pertama dibuka (session tersimpan — tidak perlu scan ulang tiap restart)
-- CRUD template broadcast (teks + opsional 1 gambar)
-- Buat broadcast: pilih template ATAU teks langsung + gambar, daftar nomor dipisah koma
+- Session WhatsApp (Baileys) persisten — scan QR sekali, tersimpan di `AUTH_DIR`
+- QR auto-rotation + auto-reconnect dengan backoff saat koneksi putus
 - Link preview otomatis untuk teks yang memuat URL (thumbnail link tampil, mis. Google Play)
-- Rate limit per broadcast (pesan/menit, default 20)
-- Mode proses: `queue` (antrian, satu per satu) atau `parallel` (jalan bersama, risiko ban lebih tinggi)
-- History broadcast + detail status per-recipient
-- Tombol "Kirim ulang yang gagal" — buat broadcast baru hanya dari nomor yang gagal terkirim
-- REST API + SQLite (better-sqlite3), arsitektur MVC clean
+- REST API: template, media upload, broadcast, history, cancel, retry
+- Rate limit per broadcast (pesan/menit) + mode proses `queue` (antrian) / `parallel`
+- Recovery otomatis saat server restart di tengah broadcast (recipient `sent` tidak di-resend)
+- Kirim ulang recipient yang gagal (`POST /api/broadcasts/:id/retry`) — buat broadcast baru hanya dari nomor gagal, nomor terkirim tidak di-resend
+- SQLite (better-sqlite3), arsitektur MVC clean
 
 ## Persyaratan
 
 - Node.js v20+ (dikembangkan & diuji di v24) — Baileys v7 adalah ESM; dimuat via `import()` dinamis dari proyek CJS
-- Tanpa Chromium/browser (koneksi langsung via WebSocket — jauh lebih ringan dari Puppeteer)
+- Tanpa Chromium/browser (koneksi langsung via WebSocket)
 
 ## Menjalankan
 
 ```bash
-cp .env.example .env   # sesuaikan bila perlu (PORT default 3000)
+cp .env.example .env   # sesuaikan bila perlu (PORT default 3000, CORS_ORIGINS untuk mode terpisah)
 npm install
 npm run dev            # atau npm start
 ```
 
-Buka `http://localhost:3000`, scan QR di tab **Koneksi** memakai HP kamu.
+Service listen di `http://localhost:3000` — **API only** (tidak menyajikan frontend). Scan QR via frontend `wa-bot-web`, atau buka endpoint status di bawah ini.
+
+### Mode terpisah (frontend di origin lain)
+
+Web frontend (wa-bot-web) memanggil API ini lintas-origin. Izinkan origin web lewat env:
+
+```bash
+CORS_ORIGINS=http://localhost:5173
+```
+
+Kosong (`CORS_ORIGINS=`) = same-origin (backward-compatible).
 
 ## Struktur
 
@@ -40,11 +51,11 @@ src/
   services/        # logika bisnis: whatsapp, broadcast, runner, media
   controllers/     # handler HTTP
   routes/          # definisi route REST
-  middleware/      # upload, error handler
+  middleware/      # upload, CORS, error handler
   utils/           # helper (phone, sleep, httpError)
-public/            # frontend vanilla (desktop only)
 config/            # config + koneksi DB
 db/migrations/     # skema SQLite
+uploads/           # media broadcast (dari env UPLOAD_DIR)
 ```
 
 ## REST API (ringkas)
@@ -56,10 +67,12 @@ db/migrations/     # skema SQLite
 | POST | `/api/connection/logout` | logout + hapus session |
 | CRUD | `/api/templates` | kelola template |
 | POST/DELETE | `/api/media` | upload/hapus gambar |
-| POST | `/api/broadcasts` | buat broadcast `{ mode, ratePerMinute, recipients, templateId?|messageText?, mediaPath? }` |
+| POST | `/api/broadcasts` | buat broadcast `{ mode, ratePerMinute, recipients, templateId?\|messageText?, mediaPath? }` |
 | GET | `/api/broadcasts` · `/api/broadcasts/:id` | history + detail per-recipient |
 | POST | `/api/broadcasts/:id/cancel` | batalkan broadcast |
 | POST | `/api/broadcasts/:id/retry` | kirim ulang recipient yang gagal (buat broadcast baru, nomor terkirim tidak di-resend) |
+
+Media di-serve di `/uploads/...` (mis. `http://localhost:3000/uploads/broadcasts/<id>/image.jpg`).
 
 ## Catatan
 
