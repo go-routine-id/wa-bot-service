@@ -24,6 +24,10 @@ const MAX_PAIR_RETRIES = 2;
 // persisten puluhan detik — retry 3 detik flat hampir selalu sia-sia (kasus
 // pairing 'bisnis').
 const PAIR_RETRY_DELAYS = [5000, 15000];
+// Jendela validitas kode pairing 8 digit. Lebih panjang dari QR karena kode
+// diketik manual di HP (bukan race kamera) — 3 menit cukup santai tapi tetap
+// membatasi exposure kode yang tampil di UI.
+const PAIRING_CODE_TTL_MS = 3 * 60 * 1000;
 
 /**
  * Registry sesi runtime. Sumber kebenaran keberadaan sesi = tabel `sessions`;
@@ -108,10 +112,15 @@ function createSession(id, name) {
     id,
     name,
     authDir: path.join(config.authDir, id),
-    // uninitialized | connecting | qr | connected | disconnected | auth_failure | qr_expired
+    // uninitialized | connecting | qr | pairing_code | connected | disconnected | auth_failure | qr_expired
     status: 'uninitialized',
     qrDataUrl: null,
     qrExpiresAt: null,
+    pairingCode: null, // kode 8 digit dari requestPairingCode (null bila jalur QR)
+    pairingCodeExpiresAt: null,
+    pairingPhone: null, // nomor tujuan jalur kode pairing; null = jalur QR biasa
+    pairingRequested: false, // guard: kode hanya diminta sekali per lifecycle socket
+    pairExpiryTimer: null, // timer: kode pairing tak dipakai → qr_expired
     userInfo: null,
     lastError: null,
     sock: null, // socket Baileys (makeWASocket) yang aktif
@@ -150,6 +159,41 @@ function clearPairRetry(sess) {
     clearTimeout(sess.pairRetryTimer);
     sess.pairRetryTimer = null;
   }
+}
+
+function clearPairExpiry(sess) {
+  if (sess.pairExpiryTimer) {
+    clearTimeout(sess.pairExpiryTimer);
+    sess.pairExpiryTimer = null;
+  }
+}
+
+/**
+ * Jendela validitas kode pairing: tak dipakai dalam PAIRING_CODE_TTL_MS →
+ * qr_expired (state expired dipakai bersama jalur QR; lastError menjelaskan
+ * konteksnya kode pairing) + hentikan socket. Kode baru hanya via request manual.
+ */
+function schedulePairExpiry(sess) {
+  clearPairExpiry(sess);
+  sess.pairExpiryTimer = setTimeout(() => {
+    sess.pairExpiryTimer = null;
+    if (sess.status !== 'pairing_code') return; // sudah ter-pair / state berubah → abaikan
+    const sock = sess.sock;
+    console.log(`[wa:${sess.id}] kode pairing kedaluwarsa (tidak dipakai) — pairing dihentikan, tunggu request manual.`);
+    sess.status = 'qr_expired';
+    sess.pairingCode = null;
+    sess.pairingCodeExpiresAt = null;
+    sess.lastError = 'Kode pairing kedaluwarsa — minta kode baru atau pakai QR.';
+    sess.sock = null;
+    sess.wasConnected = false;
+    if (sock) {
+      try {
+        sock.end();
+      } catch (_) {
+        // abaikan — socket mungkin sudah mati
+      }
+    }
+  }, PAIRING_CODE_TTL_MS);
 }
 
 /**
@@ -214,6 +258,44 @@ async function handleConnectionUpdate(sess, sock, update) {
   // parse → identity fresh → QR. Self-healing: user scan → pairing ulang;
   // tak discan → 401 → auth_failure.
   if (update.qr) {
+    // Jalur kode pairing: event qr pertama = socket sudah cukup jauh handshake
+    // untuk meminta kode. QR-nya sendiri diabaikan (tidak ditampilkan).
+    // Guard pairingRequested: Baileys merotasi event qr — kode hanya diminta
+    // sekali per lifecycle socket (di-reset start() saat retry).
+    if (sess.pairingPhone) {
+      if (sess.pairingRequested) return;
+      sess.pairingRequested = true;
+      sock
+        .requestPairingCode(sess.pairingPhone)
+        .then((code) => {
+          if (sess.sock !== sock) return; // socket diganti selama await (race B3)
+          sess.status = 'pairing_code';
+          sess.pairingCode = code;
+          sess.pairingCodeExpiresAt = Date.now() + PAIRING_CODE_TTL_MS;
+          sess.lastError = null;
+          clearPairRetry(sess);
+          schedulePairExpiry(sess);
+          console.log(`[wa:${sess.id}] kode pairing dibuat:`, code);
+        })
+        .catch((err) => {
+          if (sess.sock !== sock) return;
+          console.error(`[wa:${sess.id}] gagal meminta kode pairing:`, err.message);
+          sess.status = 'qr_expired';
+          sess.pairingCode = null;
+          sess.pairingCodeExpiresAt = null;
+          sess.lastError = 'WhatsApp menolak permintaan kode pairing — coba lagi nanti, atau pakai QR.';
+          const dead = sess.sock;
+          sess.sock = null;
+          if (dead) {
+            try {
+              dead.end();
+            } catch (_) {
+              // abaikan
+            }
+          }
+        });
+      return;
+    }
     let dataUrl = null;
     try {
       dataUrl = await QRCode.toDataURL(update.qr);
@@ -237,6 +319,11 @@ async function handleConnectionUpdate(sess, sock, update) {
     clearReconnect(sess);
     clearQrExpiry(sess); // sudah terhubung, QR tak perlu lagi
     clearPairRetry(sess); // sudah terhubung → retry pairing tidak perlu lagi
+    clearPairExpiry(sess);
+    sess.pairingCode = null;
+    sess.pairingCodeExpiresAt = null;
+    sess.pairingPhone = null;
+    sess.pairingRequested = false;
     sess.wasConnected = true; // lifecycle socket ini pernah terhubung → blip boleh auto-recover
     try {
       // Penanda pairing valid: dipakai hasCreds() membedakan sesi established vs
@@ -267,7 +354,12 @@ async function handleConnectionUpdate(sess, sock, update) {
       'connection closed';
     console.log(`[wa:${sess.id}] koneksi ditutup (statusCode:`, statusCode + ')', reason);
     clearQrExpiry(sess);
+    clearPairExpiry(sess);
     sess.userInfo = null;
+    // pairingPhone sengaja TIDAK di-reset di sini: retry otomatis fase pairing
+    // (cabang non-established di bawah) memakainya untuk meminta kode baru.
+    sess.pairingCode = null;
+    sess.pairingCodeExpiresAt = null;
 
     // Fatal & permanen: sesi invalid/di-logout → minta scan ulang, berhenti reconnect.
     if (
@@ -320,7 +412,9 @@ async function handleConnectionUpdate(sess, sock, update) {
     sess.qrExpiresAt = null;
     sess.lastError = established
       ? reason
-      : 'QR kedaluwarsa / pairing terputus otomatis — klik "Request QR baru" untuk membuat QR baru.';
+      : sess.pairingPhone
+        ? 'Pairing via kode terputus — minta kode baru atau pakai QR.'
+        : 'QR kedaluwarsa / pairing terputus otomatis — klik "Request QR baru" untuk membuat QR baru.';
     sess.sock = null;
     if (established) {
       scheduleReconnect(sess);
@@ -334,7 +428,9 @@ async function handleConnectionUpdate(sess, sock, update) {
       if (sess.pairRetries < MAX_PAIR_RETRIES) {
         sess.pairRetries += 1;
         sess.status = 'qr_expired';
-        sess.lastError = `Koneksi terputus sementara saat pairing — membuat QR baru… (${sess.pairRetries}/${MAX_PAIR_RETRIES})`;
+        sess.lastError = sess.pairingPhone
+          ? `Koneksi terputus sementara saat pairing — meminta kode baru… (${sess.pairRetries}/${MAX_PAIR_RETRIES})`
+          : `Koneksi terputus sementara saat pairing — membuat QR baru… (${sess.pairRetries}/${MAX_PAIR_RETRIES})`;
         sess.pairRetryTimer = setTimeout(() => {
           sess.pairRetryTimer = null;
           // User sudah request ulang / state berubah → jangan menembak retry basi.
@@ -345,7 +441,9 @@ async function handleConnectionUpdate(sess, sock, update) {
           });
         }, PAIR_RETRY_DELAYS[Math.min(sess.pairRetries - 1, PAIR_RETRY_DELAYS.length - 1)]);
       } else {
-        sess.lastError = 'QR kedaluwarsa / pairing terputus otomatis — klik "Request QR baru" untuk membuat QR baru.';
+        sess.lastError = sess.pairingPhone
+          ? 'Pairing via kode terputus — minta kode baru atau pakai QR.'
+          : 'QR kedaluwarsa / pairing terputus otomatis — klik "Request QR baru" untuk membuat QR baru.';
       }
     }
   }
@@ -399,6 +497,7 @@ async function start(id) {
     }
     sess.sock = sock;
     sess.wasConnected = false; // lifecycle socket baru dimulai belum pernah connected
+    sess.pairingRequested = false; // lifecycle baru boleh meminta kode pairing lagi (retry)
     sess.status = 'connecting';
     sess.lastError = null;
 
@@ -428,12 +527,17 @@ async function destroy(id) {
   clearReconnect(sess);
   clearQrExpiry(sess);
   clearPairRetry(sess);
+  clearPairExpiry(sess);
   sess.wasConnected = false;
   const sock = sess.sock;
   sess.sock = null;
   sess.status = 'uninitialized';
   sess.qrDataUrl = null;
   sess.qrExpiresAt = null;
+  // pairingPhone/pairingRequested TIDAK di-reset di sini — destroy dipanggil di
+  // tengah flow requestPairingCode; caller (rescan/logout) yang mereset jalur.
+  sess.pairingCode = null;
+  sess.pairingCodeExpiresAt = null;
   sess.userInfo = null;
   sess.lastError = null;
   if (sock) {
@@ -493,6 +597,7 @@ async function deleteSession(id) {
     clearReconnect(sess);
     clearQrExpiry(sess);
     clearPairRetry(sess);
+    clearPairExpiry(sess);
     const sock = sess.sock;
     sess.sock = null;
     if (sock) {
@@ -532,6 +637,8 @@ async function rescan(id) {
   const wasAuthFailure = sess.status === 'auth_failure'; // destroy me-reset status
   clearPairRetry(sess); // aksi user eksplisit → batalkan retry otomatis yang tertunda
   sess.pairRetries = 0; // ...dan isi ulang quota retry penuh
+  sess.pairingPhone = null; // rescan = kembali ke jalur QR
+  sess.pairingRequested = false;
   sess.stopReconnect = true; // cegah timer lama menembak selama destroy
   // Urutan WAJIB destroy → rm (D1): socket harus mati dulu supaya tidak ada
   // creds.update/keys.set yang menulis ke folder yang sedang dihapus.
@@ -548,6 +655,66 @@ async function rescan(id) {
   await start(id);
 }
 
+/**
+ * Normalisasi nomor untuk pairing code: WhatsApp mewajibkan format internasional
+ * tanpa "+" (E.164 digit-only, 8-15 digit, tidak diawali 0).
+ */
+function normalizePairingPhone(raw) {
+  const digits = String(raw ?? '').replace(/\D/g, '');
+  if (!/^[1-9]\d{7,14}$/.test(digits)) {
+    throw new HttpError(
+      400,
+      'Nomor HP tidak valid — pakai format internasional tanpa "+" atau angka 0 di depan (mis. 6281234567890)'
+    );
+  }
+  return digits;
+}
+
+/**
+ * Pairing via kode 8 digit (alternatif scan QR): restart socket bersih seperti
+ * rescan, tandai jalur kode (sess.pairingPhone), lalu kode diminta ke WhatsApp
+ * saat socket mulai handshake — di-intercept dari event qr pertama (lihat
+ * handleConnectionUpdate). Kode muncul async di status sesi (polling UI).
+ * Hanya untuk sesi TANPA pairing valid: sesi established memakai "Hubungkan"
+ * (rescan me-resume creds) — menghapus creds valid demi pairing baru di sini
+ * akan membuang linked device yang masih hidup.
+ */
+async function requestPairingCode(id, phone) {
+  if (!sessionExists(id)) throw new HttpError(404, 'Sesi tidak ditemukan');
+  const normalized = normalizePairingPhone(phone);
+  let sess = registry.get(id);
+  if (!sess) {
+    const row = sessionRepository.findById(id);
+    sess = createSession(id, row.name);
+    registry.set(id, sess);
+  }
+  if (sess.status === 'connected') {
+    throw new HttpError(409, 'Sesi sudah terhubung — logout dulu bila ingin pairing ulang.');
+  }
+  if (hasCreds(id)) {
+    throw new HttpError(409, 'Sesi masih punya pairing valid — klik "Hubungkan", atau logout/hapus dulu untuk pairing baru.');
+  }
+  clearPairRetry(sess);
+  sess.pairRetries = 0;
+  sess.stopReconnect = true;
+  // Urutan WAJIB destroy → rm (D1), sama seperti rescan: sisa pairing gagal tak
+  // layak di-resume (identity setengah jadi → 401/515 berulang).
+  await destroy(id);
+  clearReconnect(sess);
+  try {
+    fs.rmSync(sess.authDir, { recursive: true, force: true });
+  } catch (_) {
+    // abaikan
+  }
+  sess.pairingPhone = normalized; // penanda jalur kode — di-intercept di handleConnectionUpdate
+  sess.pairingRequested = false;
+  sess.pairingCode = null;
+  sess.pairingCodeExpiresAt = null;
+  sess.stopReconnect = false;
+  await start(id);
+  return getStatus(id);
+}
+
 /** Logout penuh satu sesi: invalidasi di server WhatsApp + hapus creds; row sesi tetap (bisa scan ulang). */
 async function logoutSession(id) {
   if (!sessionExists(id)) throw new HttpError(404, 'Sesi tidak ditemukan');
@@ -558,7 +725,10 @@ async function logoutSession(id) {
     clearReconnect(sess);
     clearQrExpiry(sess);
     clearPairRetry(sess);
+    clearPairExpiry(sess);
     sess.wasConnected = false;
+    sess.pairingPhone = null;
+    sess.pairingRequested = false;
     const sock = sess.sock;
     sess.sock = null;
     if (sock) {
@@ -606,6 +776,9 @@ function getStatus(id) {
     hasQr: sess?.status === 'qr' && !!sess?.qrDataUrl,
     qrDataUrl: sess?.qrDataUrl ?? null,
     qrExpiresAt: sess?.qrExpiresAt ?? null,
+    hasPairingCode: sess?.status === 'pairing_code' && !!sess?.pairingCode,
+    pairingCode: sess?.pairingCode ?? null,
+    pairingCodeExpiresAt: sess?.pairingCodeExpiresAt ?? null,
     userInfo: sess?.userInfo ?? null,
     lastError: sess?.lastError ?? null,
   };
@@ -663,5 +836,6 @@ module.exports = {
   isConnected,
   sendMessage,
   rescan,
+  requestPairingCode,
   logoutSession,
 };

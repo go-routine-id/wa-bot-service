@@ -48,6 +48,12 @@ const sessionController = {
     res.json({ ok: true });
   }),
 
+  /** Pairing via kode 8 digit: body { phone }. Kode muncul async di status sesi. */
+  pairingCode: wrap(async (req, res) => {
+    const data = await whatsappService.requestPairingCode(req.params.id, req.body?.phone);
+    res.json({ data });
+  }),
+
   logout: wrap(async (req, res) => {
     await whatsappService.logoutSession(req.params.id);
     res.json({ ok: true });
