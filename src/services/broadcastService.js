@@ -102,29 +102,28 @@ const broadcastService = {
   /**
    * Kirim ulang recipient yang gagal dari broadcast `id`: buat broadcast BARU
    * yang hanya berisi nomor berstatus 'failed' (nomor terkirim TIDAK pernah di-resend).
+   * Mendukung override `sessionId` baru bila sesi asal sudah dihapus atau ingin dialihkan.
    * History broadcast asli tetap utuh; retry tampil sebagai entri baru yang transparan.
    */
-  retry(id) {
+  retry(id, { sessionId } = {}) {
     const source = broadcastRepository.findById(id);
     if (!source) throw new HttpError(404, 'Broadcast tidak ditemukan');
 
-    // Broadcast legacy (pra-multi-session) tidak punya sesi pengirim yang jelas —
-    // memilih sesi adalah keputusan user, jadi eksplisit minta buat broadcast baru.
-    if (!source.sessionId) {
+    // Tentukan sesi target: jika user memilih sessionId baru via body, pakai itu.
+    // Jika tidak, fallback ke sessionId asal broadcast.
+    const targetSessionId = (sessionId && String(sessionId).trim()) || source.sessionId;
+
+    if (!targetSessionId) {
       throw new HttpError(
         400,
-        'Broadcast lama tidak punya sesi pengirim — buat broadcast baru dan pilih sesi.'
+        'Pilih sesi pengirim untuk melanjutkan pengiriman ulang.'
       );
     }
 
-    // Sesi pengirim asal sudah dihapus → retry mustahil berhasil (runner fail-fast
-    // "Sesi pengirim tidak ditemukan"); tolak di awal, sejalan dengan create().
-    // Jalur normal sebenarnya sudah di-cover FK ON DELETE SET NULL (session_id
-    // menjadi NULL → kena guard legacy di atas); ini defense-in-depth.
-    if (!whatsappService.sessionExists(source.sessionId)) {
+    if (!whatsappService.sessionExists(targetSessionId)) {
       throw new HttpError(
         400,
-        'Sesi pengirim tidak ditemukan — buat broadcast baru dan pilih sesi pengirim.'
+        `Sesi pengirim "${targetSessionId}" tidak ditemukan — pilih sesi pengirim yang aktif.`
       );
     }
 
@@ -140,7 +139,7 @@ const broadcastService = {
 
     const broadcast = createCore({
       templateId: source.templateId,
-      sessionId: source.sessionId, // retry mewarisi sesi pengirim broadcast asal
+      sessionId: targetSessionId,
       mode: source.mode,
       ratePerMinute: source.ratePerMinute,
       messageText: source.messageText,
@@ -152,7 +151,7 @@ const broadcastService = {
     });
 
     console.log(
-      `[retry] #${id} → #${broadcast.id} (${failedRecipients.length} penerima gagal dikirim ulang)`
+      `[retry] #${id} → #${broadcast.id} via sesi "${targetSessionId}" (${failedRecipients.length} penerima gagal dikirim ulang)`
     );
     return broadcast;
   },

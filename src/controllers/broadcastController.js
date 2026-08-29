@@ -30,7 +30,9 @@ const broadcastController = {
   },
 
   retry(req, res) {
-    const data = broadcastService.retry(Number(req.params.id));
+    const data = broadcastService.retry(Number(req.params.id), {
+      sessionId: req.body?.sessionId,
+    });
     res.status(201).json({ data });
   },
 };
