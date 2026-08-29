@@ -9,13 +9,21 @@ const sessionRepository = require('../repositories/sessionRepository');
 const { HttpError } = require('../utils/httpError');
 
 const RECONNECT_DELAYS = [3000, 5000, 10000, 20000, 30000]; // ms; cap 30s, ulang terus
-const QR_TTL_MS = 60000; // jendela validitas QR (anti pairing-loop); 60s supaya cukup buat scan manual di HP
+// Backstop validitas QR. Praktisnya Baileys merotasi QR (60s pertama, lalu tiap
+// 20s — lib/Socket/socket.js rc14) dan timer ini di-reset tiap QR baru, jadi
+// hampir tak pernah menembak; batas pairing sesungguhnya = ref QR dari server
+// habis (close 408) + cap retry di bawah. Timer ini jaga-jaga bila rotasi QR
+// berhenti tanpa event close.
+const QR_TTL_MS = 60000;
 // Retry otomatis TERBATAS saat blip transient (515/408/428) di fase pairing: QR
 // dibuat ulang maks MAX_PAIR_RETRIES kali, lalu menyerah ke tombol manual.
 // Bukan loop tak terbatas → risiko banned tetap dibatasi (hanya beberapa identity
 // per aksi user, bukan reconnect tanpa henti seperti anti-loop task #28).
 const MAX_PAIR_RETRIES = 2;
-const PAIR_RETRY_DELAY_MS = 3000; // jeda antar retry: cukup utk socket pulih, terasa responsif
+// Jeda retry otomatis fase pairing (backoff per percobaan): 515/408 cenderung
+// persisten puluhan detik — retry 3 detik flat hampir selalu sia-sia (kasus
+// pairing 'bisnis').
+const PAIR_RETRY_DELAYS = [5000, 15000];
 
 /**
  * Registry sesi runtime. Sumber kebenaran keberadaan sesi = tabel `sessions`;
@@ -296,7 +304,7 @@ async function handleConnectionUpdate(sess, sock, update) {
           start(sess.id).catch((err) => {
             console.error(`[wa:${sess.id}] retry pairing gagal:`, err.message);
           });
-        }, PAIR_RETRY_DELAY_MS);
+        }, PAIR_RETRY_DELAYS[Math.min(sess.pairRetries - 1, PAIR_RETRY_DELAYS.length - 1)]);
       } else {
         sess.lastError = 'QR kedaluwarsa / pairing terputus otomatis — klik "Request QR baru" untuk membuat QR baru.';
       }
@@ -339,11 +347,10 @@ async function start(id) {
       auth: authState,
       printQRInTerminal: false,
       logger: quietLogger(),
-      // Semua keputusan reconnect diserahkan ke kode kita (scheduleReconnect untuk
-      // sesi connected, retry terbatas untuk fase pairing). Reconnect internal
-      // Baileys (default) bisa bikin "ghost socket" yang tetap mencoba pairing
-      // dengan identity setengah jadi setelah creds kita buang → 401/515 berulang.
-      maxReconnectRetries: 0,
+      // rc14 tidak punya auto-reconnect internal (opsi maxReconnectRetries sudah
+      // tidak dibaca library — terverifikasi grep lib/ rc14) → semua keputusan
+      // reconnect memang sepenuhnya di kode kita: scheduleReconnect untuk sesi
+      // yang pernah connected, retry terbatas untuk fase pairing.
     });
     if (sess.gen !== gen) {
       try {
@@ -471,9 +478,12 @@ async function rescan(id) {
   // "Request QR baru" = pairing baru → buang creds basi. Bukan cuma saat
   // auth_failure: sisa pairing yang gagal (515, QR expired, connecting) juga tak
   // layak di-resume — kalau dibiarkan, start() resume identity setengah jadi →
-  // 401 loggedOut / 515 berulang (loop gagal pairing). Sesi yang pernah connected
-  // (wasConnected) tetap resume creds valid, tidak dipaksa scan ulang.
-  if (sess.status === 'auth_failure' || !sess.wasConnected) {
+  // 401 loggedOut / 515 berulang (loop gagal pairing). Sesi yang established
+  // (hasCreds di disk) tetap resume creds valid, tidak dipaksa scan ulang.
+  // Basis keputusan HARUS penanda di disk, bukan sess.wasConnected: flag runtime
+  // itu selalu false setelah boot sampai connection open pertama — klik
+  // "Hubungkan" pasca-restart dulu bisa menghapus creds sesi yang masih valid.
+  if (sess.status === 'auth_failure' || !hasCreds(id)) {
     clearReconnect(sess);
     try {
       fs.rmSync(sess.authDir, { recursive: true, force: true });
