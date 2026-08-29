@@ -9,7 +9,13 @@ const sessionRepository = require('../repositories/sessionRepository');
 const { HttpError } = require('../utils/httpError');
 
 const RECONNECT_DELAYS = [3000, 5000, 10000, 20000, 30000]; // ms; cap 30s, ulang terus
-const QR_TTL_MS = 25000; // jendela validitas QR sebelum dianggap expired (anti pairing-loop)
+const QR_TTL_MS = 60000; // jendela validitas QR (anti pairing-loop); 60s supaya cukup buat scan manual di HP
+// Retry otomatis TERBATAS saat blip transient (515/408/428) di fase pairing: QR
+// dibuat ulang maks MAX_PAIR_RETRIES kali, lalu menyerah ke tombol manual.
+// Bukan loop tak terbatas → risiko banned tetap dibatasi (hanya beberapa identity
+// per aksi user, bukan reconnect tanpa henti seperti anti-loop task #28).
+const MAX_PAIR_RETRIES = 2;
+const PAIR_RETRY_DELAY_MS = 3000; // jeda antar retry: cukup utk socket pulih, terasa responsif
 
 /**
  * Registry sesi runtime. Sumber kebenaran keberadaan sesi = tabel `sessions`;
@@ -39,8 +45,26 @@ function ensureAuthDir() {
   fs.mkdirSync(config.authDir, { recursive: true });
 }
 
+/**
+ * Apakah sesi punya pairing WhatsApp yang valid & bisa di-resume?
+ * creds.json saja TIDAK cukup: Baileys menulis creds.json (identity setengah
+ * jadi) begitu QR dibuat — sesi yang pairing-nya gagal/aborted hanya punya file
+ * itu (field `registered` TIDAK bisa dipakai: linked device hasil scan QR tetap
+ * registered:false). Sesi yang pernah berhasil terkoneksi ditandai file
+ * `.linked` (ditulis saat connection open) atau punya state tambahan
+ * (app-state-sync-*, session-*, device-list-*, identity-key-*, dll.).
+ */
 function hasCreds(id) {
-  return fs.existsSync(path.join(config.authDir, id, 'creds.json'));
+  const dir = path.join(config.authDir, id);
+  if (!fs.existsSync(path.join(dir, 'creds.json'))) return false;
+  try {
+    if (fs.existsSync(path.join(dir, '.linked'))) return true;
+    // Backfill sesi valid yang dibuat sebelum marker ada: state Baileys lain
+    // selain creds.json hanya muncul setelah pairing sukses & sesi berjalan.
+    return fs.readdirSync(dir).filter((f) => f !== 'creds.json').length > 0;
+  } catch (_) {
+    return false; // folder tak terbaca → anggap tidak ada creds
+  }
 }
 
 function sessionExists(id) {
@@ -90,6 +114,8 @@ function createSession(id, name) {
     stopReconnect: false, // true saat destroy/logout/delete; false saat rescan/start ulang
     wasConnected: false, // socket lifecycle ini pernah 'connected'? → kunci blip recovery
     gen: 0, // naik tiap destroy/rescan/delete → start() in-flight dibatalkan (fix race)
+    pairRetries: 0, // retry otomatis yang sudah dipakai di fase pairing (cap MAX_PAIR_RETRIES)
+    pairRetryTimer: null, // timer retry otomatis saat blip transient di fase QR
   };
 }
 
@@ -107,6 +133,14 @@ function clearQrExpiry(sess) {
   if (sess.qrExpiryTimer) {
     clearTimeout(sess.qrExpiryTimer);
     sess.qrExpiryTimer = null;
+  }
+}
+
+/** Batalkan timer retry otomatis pairing (dipanggil saat lifecycle pindah fase). */
+function clearPairRetry(sess) {
+  if (sess.pairRetryTimer) {
+    clearTimeout(sess.pairRetryTimer);
+    sess.pairRetryTimer = null;
   }
 }
 
@@ -172,6 +206,7 @@ async function handleConnectionUpdate(sess, sock, update) {
       sess.qrDataUrl = null;
     }
     sess.qrExpiresAt = Date.now() + QR_TTL_MS;
+    clearPairRetry(sess); // QR baru sudah tampil → retry pending tak relevan lagi
     scheduleQrExpiry(sess); // reset jendela validitas tiap QR baru dari Baileys
     return;
   }
@@ -179,7 +214,15 @@ async function handleConnectionUpdate(sess, sock, update) {
   if (update.connection === 'open') {
     clearReconnect(sess);
     clearQrExpiry(sess); // sudah terhubung, QR tak perlu lagi
+    clearPairRetry(sess); // sudah terhubung → retry pairing tidak perlu lagi
     sess.wasConnected = true; // lifecycle socket ini pernah terhubung → blip boleh auto-recover
+    try {
+      // Penanda pairing valid: dipakai hasCreds() membedakan sesi established vs
+      // pairing gagal (yang hanya punya creds.json). Terhapus saat rescan/logout.
+      fs.writeFileSync(path.join(sess.authDir, '.linked'), String(Date.now()));
+    } catch (_) {
+      // abaikan — marker bukan kritikal
+    }
     const user = sock.user;
     sess.status = 'connected';
     sess.qrDataUrl = null;
@@ -235,7 +278,28 @@ async function handleConnectionUpdate(sess, sock, update) {
     if (sess.wasConnected) {
       scheduleReconnect(sess);
     } else {
+      // Fase pairing (belum pernah connected) + blip transient: jangan menyerah
+      // langsung. Retry otomatis TERBATAS (MAX_PAIR_RETRIES): start() buang creds
+      // basi → identity baru + QR fresh → user dapat kesempatan scan ulang tanpa
+      // klik ulang. Setelah quota habis → qr_expired manual (anti pairing-loop
+      // dari task #28 tetap dijaga — tidak ada reconnect loop tak terbatas).
       clearReconnect(sess);
+      if (sess.pairRetries < MAX_PAIR_RETRIES) {
+        sess.pairRetries += 1;
+        sess.status = 'qr_expired';
+        sess.lastError = `Koneksi terputus sementara saat pairing — membuat QR baru… (${sess.pairRetries}/${MAX_PAIR_RETRIES})`;
+        sess.pairRetryTimer = setTimeout(() => {
+          sess.pairRetryTimer = null;
+          // User sudah request ulang / state berubah → jangan menembak retry basi.
+          if (sess.status !== 'qr_expired' || sess.sock) return;
+          console.log(`[wa:${sess.id}] retry otomatis pairing (${sess.pairRetries}/${MAX_PAIR_RETRIES}) — buat QR baru…`);
+          start(sess.id).catch((err) => {
+            console.error(`[wa:${sess.id}] retry pairing gagal:`, err.message);
+          });
+        }, PAIR_RETRY_DELAY_MS);
+      } else {
+        sess.lastError = 'QR kedaluwarsa / pairing terputus otomatis — klik "Request QR baru" untuk membuat QR baru.';
+      }
     }
   }
 }
@@ -253,6 +317,18 @@ async function start(id) {
   if (!sess) return null;
   if (sess.starting) return sess.starting;
 
+  // Jangan pernah resume creds pairing yang gagal/aborted: kalau creds.json ada
+  // tapi sesi belum pernah punya pairing valid (hasCreds false = hanya creds.json,
+  // tanpa state Baileys/.linked), buang dulu supaya start() menghasilkan QR baru,
+  // bukan resume identity setengah jadi → 401 loggedOut / 515 berulang.
+  if (fs.existsSync(path.join(sess.authDir, 'creds.json')) && !hasCreds(sess.id)) {
+    try {
+      fs.rmSync(sess.authDir, { recursive: true, force: true });
+    } catch (_) {
+      // abaikan
+    }
+  }
+
   const gen = sess.gen;
   const promise = (async () => {
     const lib = await loadBaileys();
@@ -263,6 +339,11 @@ async function start(id) {
       auth: authState,
       printQRInTerminal: false,
       logger: quietLogger(),
+      // Semua keputusan reconnect diserahkan ke kode kita (scheduleReconnect untuk
+      // sesi connected, retry terbatas untuk fase pairing). Reconnect internal
+      // Baileys (default) bisa bikin "ghost socket" yang tetap mencoba pairing
+      // dengan identity setengah jadi setelah creds kita buang → 401/515 berulang.
+      maxReconnectRetries: 0,
     });
     if (sess.gen !== gen) {
       try {
@@ -293,6 +374,7 @@ async function destroy(id) {
   sess.stopReconnect = true;
   clearReconnect(sess);
   clearQrExpiry(sess);
+  clearPairRetry(sess);
   sess.wasConnected = false;
   const sock = sess.sock;
   sess.sock = null;
@@ -357,6 +439,7 @@ async function deleteSession(id) {
     sess.stopReconnect = true;
     clearReconnect(sess);
     clearQrExpiry(sess);
+    clearPairRetry(sess);
     const sock = sess.sock;
     sess.sock = null;
     if (sock) {
@@ -385,8 +468,12 @@ async function rescan(id) {
     sess = createSession(id, row.name);
     registry.set(id, sess);
   }
-  if (sess.status === 'auth_failure') {
-    // Sesi rusak → hapus creds supaya pairing baru (QR) muncul, bukan gagal lagi.
+  // "Request QR baru" = pairing baru → buang creds basi. Bukan cuma saat
+  // auth_failure: sisa pairing yang gagal (515, QR expired, connecting) juga tak
+  // layak di-resume — kalau dibiarkan, start() resume identity setengah jadi →
+  // 401 loggedOut / 515 berulang (loop gagal pairing). Sesi yang pernah connected
+  // (wasConnected) tetap resume creds valid, tidak dipaksa scan ulang.
+  if (sess.status === 'auth_failure' || !sess.wasConnected) {
     clearReconnect(sess);
     try {
       fs.rmSync(sess.authDir, { recursive: true, force: true });
@@ -394,6 +481,8 @@ async function rescan(id) {
       // abaikan
     }
   }
+  clearPairRetry(sess); // aksi user eksplisit → batalkan retry otomatis yang tertunda
+  sess.pairRetries = 0; // ...dan isi ulang quota retry penuh
   sess.stopReconnect = true; // cegah timer lama menembak selama destroy
   await destroy(id);
   sess.stopReconnect = false; // sesi baru boleh auto-reconnect setelah pernah connected
@@ -409,6 +498,7 @@ async function logoutSession(id) {
     sess.stopReconnect = true;
     clearReconnect(sess);
     clearQrExpiry(sess);
+    clearPairRetry(sess);
     sess.wasConnected = false;
     const sock = sess.sock;
     sess.sock = null;
