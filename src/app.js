@@ -13,6 +13,13 @@ app.use(express.json());
 // supaya preflight OPTIONS lintas-origin ditangani (204) sebelum masuk routing.
 app.use(corsMiddleware);
 app.use('/uploads', express.static(config.uploadDir));
+// API di-polling frontend tiap 2.5 detik → larang caching kondisional: 304
+// ber-body kosong memecahkan klien yang tidak menangani cache transparan
+// (api.js membaca res.ok + res.json — 304 bukan 2xx → error "HTTP 304" palsu).
+app.use('/api', (_req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  next();
+});
 app.use('/api', apiRoutes);
 
 // 404 fallback (harus setelah semua route)
