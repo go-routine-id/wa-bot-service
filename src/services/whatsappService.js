@@ -58,18 +58,41 @@ function ensureAuthDir() {
 }
 
 /**
+ * true bila creds.json berisi `account` — artinya pair-success SUDAH diterima
+ * dari server WA (configureSuccessfulPairing, validate-connection.js rc14)
+ * meski koneksi belum pernah 'open'. Kasus ini NORMAL: sehabis pairing sukses
+ * (scan QR / kode), server menutup stream dengan 515 "restart required" —
+ * by design (komentar socket.js rc14: "if device pairs successfully, the
+ * server asks to restart the connection"). Creds seperti ini WAJIB di-resume,
+ * bukan dibuang.
+ */
+function hasPairingAccount(id) {
+  try {
+    const creds = JSON.parse(fs.readFileSync(path.join(config.authDir, id, 'creds.json'), 'utf8'));
+    return !!(creds && creds.account);
+  } catch (_) {
+    return false; // file tak ada / korup → bukan pair-success
+  }
+}
+
+/**
  * Apakah sesi punya pairing WhatsApp yang valid & bisa di-resume?
  * creds.json saja TIDAK cukup: Baileys menulis creds.json (identity setengah
  * jadi) begitu QR dibuat — sesi yang pairing-nya gagal/aborted hanya punya file
  * itu (field `registered` TIDAK bisa dipakai: linked device hasil scan QR tetap
- * registered:false). Sesi yang pernah berhasil terkoneksi ditandai file
- * `.linked` (ditulis saat connection open) atau punya state tambahan
- * (app-state-sync-*, session-*, device-list-*, identity-key-*, dll.).
+ * registered:false). Yang dianggap valid: pair-success sudah tiba (`account`
+ * ada), marker `.linked` ada (ditulis saat connection open), atau ada state
+ * Baileys tambahan (app-state-sync-*, session-*, device-list-*, dll.).
  */
 function hasCreds(id) {
   const dir = path.join(config.authDir, id);
   if (!fs.existsSync(path.join(dir, 'creds.json'))) return false;
   try {
+    // Cek account DULU: jendela pair-success → 515 → pre-open tidak punya
+    // `.linked` dan bisa belum punya file state lain. Tanpa cek ini, creds yang
+    // BARU SAJA terdaftar di server WA dianggap "basi setengah jadi" → dihapus
+    // start() → setiap pairing sukses selalu batal (loop tak berujung).
+    if (hasPairingAccount(id)) return true;
     if (fs.existsSync(path.join(dir, '.linked'))) return true;
     // Backfill sesi valid yang dibuat sebelum marker ada: state Baileys lain
     // selain creds.json hanya muncul setelah pairing sukses & sesi berjalan.
@@ -178,6 +201,26 @@ function schedulePairExpiry(sess) {
   sess.pairExpiryTimer = setTimeout(() => {
     sess.pairExpiryTimer = null;
     if (sess.status !== 'pairing_code') return; // sudah ter-pair / state berubah → abaikan
+    // Kode dipakai di detik terakhir: pair-success bisa sudah tiba (creds.account)
+    // sementara status masih 'pairing_code'. Sama seperti jalur QR — reconnect,
+    // jangan buang (515 pasca-pairing adalah restart by design).
+    if (hasPairingAccount(sess.id)) {
+      console.log(`[wa:${sess.id}] timer kode habis tapi pair-success sudah tiba — lanjut reconnect.`);
+      const paired = sess.sock;
+      sess.status = 'disconnected';
+      sess.pairingCode = null;
+      sess.pairingCodeExpiresAt = null;
+      sess.sock = null;
+      if (paired) {
+        try {
+          paired.end();
+        } catch (_) {
+          // abaikan
+        }
+      }
+      scheduleReconnect(sess);
+      return;
+    }
     const sock = sess.sock;
     console.log(`[wa:${sess.id}] kode pairing kedaluwarsa (tidak dipakai) — pairing dihentikan, tunggu request manual.`);
     sess.status = 'qr_expired';
@@ -206,6 +249,26 @@ function scheduleQrExpiry(sess) {
   sess.qrExpiryTimer = setTimeout(() => {
     sess.qrExpiryTimer = null;
     if (sess.status !== 'qr') return; // sudah discan / state berubah → abaikan
+    // Scan sukses di detik terakhir: pair-success (creds.account) bisa sudah
+    // tiba sementara status masih 'qr' menunggu 'open'. Jangan buang pairing
+    // yang sudah terdaftar — reconnect pakai creds tersimpan (515 by design).
+    if (hasPairingAccount(sess.id)) {
+      console.log(`[wa:${sess.id}] timer QR habis tapi pair-success sudah tiba — lanjut reconnect.`);
+      const paired = sess.sock;
+      sess.status = 'disconnected';
+      sess.qrDataUrl = null;
+      sess.qrExpiresAt = null;
+      sess.sock = null;
+      if (paired) {
+        try {
+          paired.end();
+        } catch (_) {
+          // abaikan
+        }
+      }
+      scheduleReconnect(sess);
+      return;
+    }
     const sock = sess.sock;
     console.log(`[wa:${sess.id}] QR kedaluwarsa (tidak discan) — pairing dihentikan, tunggu request manual.`);
     sess.status = 'qr_expired';
