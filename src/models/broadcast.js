@@ -21,14 +21,18 @@ function validateBroadcastCreate(body) {
     throw new HttpError(400, 'mode wajib "queue" atau "parallel"');
   }
 
-  // Dukungan fleksibel: delaySeconds (jeda per pesan dalam detik) atau ratePerMinute (pesan per menit)
+  // Dukungan fleksibel: delaySeconds (jeda per pesan dalam detik, presisi) atau
+  // ratePerMinute (pesan per menit). delaySeconds disimpan APA ADANYA (REAL) supaya
+  // runner tidur tepat; ratePerMinute tetap diisi sebagai fallback + CHECK constraint
+  // (kolom INTEGER 1–3600), tapi TIDAK dipakai runner bila delaySeconds ada.
   let ratePerMinute;
+  let delaySeconds = null;
   if (body?.delaySeconds != null && String(body.delaySeconds).trim() !== '') {
     const delaySec = Number.parseFloat(body.delaySeconds);
     if (!Number.isFinite(delaySec) || delaySec <= 0) {
       throw new HttpError(400, 'delaySeconds harus berupa angka positif (detik per pesan)');
     }
-    // Konversi delaySeconds (cth 5 detik) ke ratePerMinute yang setara (60 / 5 = 12)
+    delaySeconds = delaySec;
     ratePerMinute = Math.max(1, Math.min(config.maxRatePerMinute, Math.round(60 / delaySec)));
   } else {
     ratePerMinute = Number.parseInt(body?.ratePerMinute ?? config.defaultRatePerMinute, 10);
@@ -66,6 +70,7 @@ function validateBroadcastCreate(body) {
   return {
     mode,
     ratePerMinute,
+    delaySeconds,
     sessionId,
     recipients,
     templateId: hasTemplate ? templateId : null,

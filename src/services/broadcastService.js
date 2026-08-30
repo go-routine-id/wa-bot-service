@@ -15,7 +15,7 @@ const whatsappService = require('./whatsappService');
  * insert row → copy media → insert recipient → update counts invalid → dispatch.
  * recipientItems: [{ number, status, error? }] (status 'pending'/'failed').
  */
-function createCore({ templateId, sessionId, mode, ratePerMinute, messageText, mediaPath, recipientItems }) {
+function createCore({ templateId, sessionId, mode, ratePerMinute, delaySeconds = null, messageText, mediaPath, recipientItems }) {
   const invalidCount = recipientItems.filter((item) => item.status === 'failed').length;
 
   const broadcast = broadcastRepository.create({
@@ -23,6 +23,7 @@ function createCore({ templateId, sessionId, mode, ratePerMinute, messageText, m
     sessionId,
     mode,
     ratePerMinute,
+    delaySeconds,
     messageText,
     mediaPath: null,
     totalRecipients: recipientItems.length,
@@ -93,6 +94,7 @@ const broadcastService = {
       sessionId: input.sessionId,
       mode: input.mode,
       ratePerMinute: input.ratePerMinute,
+      delaySeconds: input.delaySeconds,
       messageText,
       mediaPath,
       recipientItems,
@@ -142,6 +144,7 @@ const broadcastService = {
       sessionId: targetSessionId,
       mode: source.mode,
       ratePerMinute: source.ratePerMinute,
+      delaySeconds: source.delaySeconds,
       messageText: source.messageText,
       mediaPath: source.mediaPath,
       recipientItems: failedRecipients.map((r) => ({

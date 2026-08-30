@@ -5,7 +5,7 @@ const { getDb } = require('../../config/database');
 const db = getDb();
 
 const COLUMNS = `b.id, b.template_id AS templateId, b.mode, b.rate_per_minute AS ratePerMinute,
-  b.message_text AS messageText, b.media_path AS mediaPath, b.status,
+  b.delay_seconds AS delaySeconds, b.message_text AS messageText, b.media_path AS mediaPath, b.status,
   b.total_recipients AS totalRecipients, b.sent_count AS sentCount, b.failed_count AS failedCount,
   b.session_id AS sessionId, s.name AS sessionName,
   (SELECT COUNT(*) FROM broadcast_recipients br
@@ -22,6 +22,7 @@ const broadcastRepository = {
     sessionId = null,
     mode,
     ratePerMinute,
+    delaySeconds = null,
     messageText,
     mediaPath = null,
     totalRecipients,
@@ -29,10 +30,19 @@ const broadcastRepository = {
     const info = db
       .prepare(
         `INSERT INTO broadcasts
-           (template_id, session_id, mode, rate_per_minute, message_text, media_path, total_recipients)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+           (template_id, session_id, mode, rate_per_minute, delay_seconds, message_text, media_path, total_recipients)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(templateId, sessionId, mode, ratePerMinute, messageText, mediaPath, totalRecipients);
+      .run(
+        templateId,
+        sessionId,
+        mode,
+        ratePerMinute,
+        delaySeconds,
+        messageText,
+        mediaPath,
+        totalRecipients
+      );
     return this.findById(info.lastInsertRowid);
   },
 

@@ -30,6 +30,18 @@ function delayForRate(ratePerMinute) {
 }
 
 /**
+ * Jeda antar pesan (ms) untuk sebuah broadcast. Bila delay_seconds tersimpan
+ * (mode "jeda per pesan"), pakai nilai presisinya; selain itu derive dari
+ * rate_per_minute. delay_seconds REAL memungkinkan jeda > 60 detik tanpa cap.
+ */
+function delayForBroadcast(broadcast) {
+  if (broadcast.delaySeconds != null && broadcast.delaySeconds > 0) {
+    return Math.round(broadcast.delaySeconds * 1000);
+  }
+  return delayForRate(broadcast.ratePerMinute);
+}
+
+/**
  * Tunggu hingga sesi pengirim broadcast terhubung (maks timeoutMs).
  * Kembalikan false bila cancel / sesi dihapus / timeout.
  * Terima object `broadcast` agar bisa cek sessionId (fail-fast bila sesi hilang).
@@ -50,7 +62,7 @@ async function waitForConnection(broadcast, timeoutMs) {
  * return: 'sent' | 'failed' | 'stopped' (stopped = cancel / koneksi fatal).
  */
 async function processRecipient(broadcast, recipient) {
-  const delayMs = delayForRate(broadcast.ratePerMinute);
+  const delayMs = delayForBroadcast(broadcast);
 
   if (isCancelled(broadcast.id)) return 'stopped';
 
