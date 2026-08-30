@@ -6,6 +6,11 @@ const config = require('../config');
 const { getDb } = require('../config/database');
 getDb();
 
+// Migrasi auth legacy (authDir/creds.json → authDir/utama) harus selesai
+// SEBELUM startAll() supaya sesi lama otomatis ter-load sebagai 'utama'.
+const { migrateLegacyAuth } = require('./utils/legacyAuthMigration');
+migrateLegacyAuth();
+
 const whatsappService = require('./services/whatsappService');
 const broadcastService = require('./services/broadcastService');
 const broadcastRunner = require('./services/broadcastRunner');

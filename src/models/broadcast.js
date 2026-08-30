@@ -12,7 +12,7 @@ const INVALID_NUMBER_ERROR = 'invalid number';
 
 /**
  * Validasi input create broadcast.
- * body: { mode, ratePerMinute, sessionId, recipients, templateId?, messageText?, mediaPath? }
+ * body: { mode, ratePerMinute?, delaySeconds?, sessionId, recipients, templateId?, messageText?, mediaPath? }
  * Mengembalikan object yang sudah dinormalisasi, atau melempar HttpError 400.
  */
 function validateBroadcastCreate(body) {
@@ -21,7 +21,19 @@ function validateBroadcastCreate(body) {
     throw new HttpError(400, 'mode wajib "queue" atau "parallel"');
   }
 
-  const ratePerMinute = Number.parseInt(body?.ratePerMinute ?? config.defaultRatePerMinute, 10);
+  // Dukungan fleksibel: delaySeconds (jeda per pesan dalam detik) atau ratePerMinute (pesan per menit)
+  let ratePerMinute;
+  if (body?.delaySeconds != null && String(body.delaySeconds).trim() !== '') {
+    const delaySec = Number.parseFloat(body.delaySeconds);
+    if (!Number.isFinite(delaySec) || delaySec <= 0) {
+      throw new HttpError(400, 'delaySeconds harus berupa angka positif (detik per pesan)');
+    }
+    // Konversi delaySeconds (cth 5 detik) ke ratePerMinute yang setara (60 / 5 = 12)
+    ratePerMinute = Math.max(1, Math.min(config.maxRatePerMinute, Math.round(60 / delaySec)));
+  } else {
+    ratePerMinute = Number.parseInt(body?.ratePerMinute ?? config.defaultRatePerMinute, 10);
+  }
+
   if (!Number.isInteger(ratePerMinute) || ratePerMinute < 1 || ratePerMinute > config.maxRatePerMinute) {
     throw new HttpError(
       400,
