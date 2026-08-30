@@ -6,11 +6,6 @@ const config = require('../config');
 const { getDb } = require('../config/database');
 getDb();
 
-// Migrasi auth legacy (authDir/creds.json → authDir/utama) harus selesai
-// SEBELUM startAll() supaya sesi lama otomatis ter-load sebagai 'utama'.
-const { migrateLegacyAuth } = require('./utils/legacyAuthMigration');
-migrateLegacyAuth();
-
 const whatsappService = require('./services/whatsappService');
 const broadcastService = require('./services/broadcastService');
 const broadcastRunner = require('./services/broadcastRunner');
@@ -31,8 +26,8 @@ async function main() {
   });
 }
 
-// Graceful shutdown: hentikan semua socket Baileys sebelum exit, supaya tidak ada
-// koneksi WebSocket menggantung / sesi setengah terbuka saat restart.
+// Graceful shutdown: destroy semua client whatsapp-web.js sebelum exit, supaya
+// tidak ada proses Chromium menggantung / sesi setengah terbuka saat restart.
 let shuttingDown = false;
 async function shutdown(signal) {
   if (shuttingDown) return;

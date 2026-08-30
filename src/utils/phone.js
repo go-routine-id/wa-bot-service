@@ -13,9 +13,12 @@ function isValidPhone(number) {
   return /^\d{8,15}$/.test(number);
 }
 
-/** JID WhatsApp (Baileys) untuk sebuah nomor privat: `<number>@s.whatsapp.net`. */
+/**
+ * Chat ID whatsapp-web.js untuk sebuah nomor privat: `<number>@c.us`.
+ * (Group `<gid>@g.us` tidak dipakai di flow broadcast — tujuan selalu nomor HP.)
+ */
 function toChatId(number) {
-  return `${number}@s.whatsapp.net`;
+  return `${number}@c.us`;
 }
 
 /**

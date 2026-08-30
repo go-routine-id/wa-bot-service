@@ -1,6 +1,6 @@
 # WA Bot Service
 
-Backend REST API untuk WhatsApp bot memakai [Baileys](https://github.com/WhiskeySockets/Baileys) (protokol WhatsApp Web multi-device langsung, tanpa browser): **kelola beberapa sesi WhatsApp** (beberapa nomor) → buat template / broadcast → kirim dari sesi pengirim yang dipilih ke daftar nomor, dengan rate-limit & pilihan mode proses.
+Backend REST API untuk WhatsApp bot memakai [whatsapp-web.js](https://wwebjs.dev/) (WhatsApp Web resmi di headless Chromium, via Puppeteer): **kelola beberapa sesi WhatsApp** (beberapa nomor) → buat template / broadcast → kirim dari sesi pengirim yang dipilih ke daftar nomor, dengan rate-limit & pilihan mode proses.
 
 Frontend web ada di repo terpisah: [**wa-bot-web**](https://github.com/go-routine-id/wa-bot-web).
 
@@ -10,8 +10,7 @@ Frontend web ada di repo terpisah: [**wa-bot-web**](https://github.com/go-routin
 
 - **Satu sesi = satu nomor WhatsApp yang di-pair** lewat QR. Kamu bisa pair beberapa nomor sekaligus (`utama`, `bisnis`, `cs`, …) dan tiap nomor berjalan independen.
 - Saat membuat broadcast, kamu **memilih satu sesi sebagai pengirim**. Broadcast lama (sebelum fitur multi-sesi) tidak punya sesi → ditandai `—` di history.
-- Sesi disimpan di `AUTH_DIR/<sessionId>/` dan ter-persist di tabel `sessions`. Status runtime (QR, koneksi) hanya di memori.
-- Saat upgrade dari versi single-session: folder `AUTH_DIR` yang lama otomatis dimigrasi jadi sesi bernama **`utama`** (tanpa scan ulang) saat service pertama kali dijalankan.
+- Sesi disimpan di `AUTH_DIR/session-<sessionId>/` dan ter-persist di tabel `sessions`. Status runtime (QR, koneksi) hanya di memori.
 
 ## Quickstart (pemakaian pertama, ±5 menit)
 
@@ -35,7 +34,6 @@ npm start                # → http://localhost:5173
 Lalu di browser:
 
 4. Buka `http://localhost:5173` → tab **Sesi WhatsApp** → ketik nama sesi → **Tambah Sesi** → scan QR dengan WhatsApp di HP.
-   **QR berlaku ~25 detik** — kalau habis, QR hilang dan cukup klik **Request QR baru**.
 5. Tambah sesi kedua bila perlu (tiap sesi = satu nomor, QR terpisah).
 6. Tab **Buat Broadcast** → pilih **Sesi pengirim**, masukkan nomor (format `628...`), pilih template / tulis teks, atur rate & mode → **Kirim**.
 7. Tab **History** → pantau status pengiriman per nomor, termasuk dari sesi mana tiap broadcast dikirim.
@@ -44,8 +42,8 @@ Status terhubung **tersimpan otomatis** — restart service tidak perlu scan ula
 
 ## Persyaratan
 
-- Node.js v20+ (dikembangkan & diuji di v24) — Baileys v7 adalah ESM; dimuat via `import()` dinamis dari proyek CJS
-- Tanpa Chromium/browser (koneksi langsung via WebSocket)
+- Node.js v20+ (dikembangkan & diuji di v24)
+- Chromium di-download otomatis oleh Puppeteer (dependency whatsapp-web.js) saat `npm install`
 
 ## Menjalankan
 
@@ -74,14 +72,15 @@ Perilaku ini berlaku **per sesi**:
 | Fase | Perilaku |
 |---|---|
 | Tambah sesi baru | Status `connecting` → QR tampil di kartu sesi sampai ter-pair |
-| QR (belum discan) | Berlaku **~25 detik**. Habis → status `qr_expired`, QR hilang, koneksi dihentikan |
-| Request manual | Klik **Request QR baru** → koneksi & QR baru dibuat. **Tidak ada auto-refresh** |
-| Setelah terhubung | Session tersimpan di `AUTH_DIR/<sessionId>`; restart service → auto-connect tanpa scan ulang |
+| QR (belum discan) | QR stabil & tetap tampil (whatsapp-web.js tidak merotasi QR) — scan kapan pun |
+| Request manual | Klik **Request QR baru** → koneksi & QR baru dibuat |
+| Setelah terhubung | Session tersimpan di `AUTH_DIR/session-<sessionId>`; restart service → auto-connect tanpa scan ulang |
 | Koneksi putus setelah pernah terhubung | Auto-reconnect backoff (3–30 detik) memakai session tersimpan — **bukan pairing baru** |
-| Sesi invalid / di-logout | Status `auth_failure` → klik rescan (session dibuang, QR baru muncul) |
+| Sesi di-logout / auth_failure | Status `auth_failure` → klik rescan (kredensial dibuang, QR baru muncul) |
+| Sesi dibuka instance lain | Status `disconnected` → klik **Hubungkan** untuk mengambil alih (take-over manual) |
 | Logout | Sesi dihentikan dari WhatsApp; kredensial dihapus tapi baris sesi tetap ada (bisa scan ulang) |
 
-> **Kenapa tidak auto-refresh QR?** Percobaan pairing berulang secara otomatis ke server WhatsApp bisa terdeteksi sebagai perilaku tidak wajar (risiko banned). Karena itu QR baru hanya dibuat saat diminta manual — bukan berulang sendiri.
+> **Catatan:** pairing hanya via scan QR (whatsapp-web.js tidak mendukung pairing code 8 digit).
 
 ## Format nomor
 
@@ -109,7 +108,7 @@ Perilaku ini berlaku **per sesi**:
 |---|---|---|
 | CRUD | `/api/templates` | kelola template (global, tidak terkait sesi) |
 | POST/DELETE | `/api/media` | upload/hapus gambar |
-| POST | `/api/broadcasts` | buat broadcast `{ sessionId, mode, ratePerMinute, recipients, templateId?\|messageText?, mediaPath? }` — **`sessionId` wajib** |
+| POST | `/api/broadcasts` | buat broadcast `{ sessionId, mode, ratePerMinute?\|delaySeconds?, recipients, templateId?\|messageText?, mediaPath? }` — **`sessionId` wajib** |
 | GET | `/api/broadcasts` · `/api/broadcasts/:id` | history (termasuk `sessionName`) + detail per-recipient |
 | POST | `/api/broadcasts/:id/cancel` | batalkan broadcast |
 | POST | `/api/broadcasts/:id/retry` | kirim ulang recipient yang gagal (buat broadcast baru; mewarisi sesi pengirim asal). Broadcast tanpa sesi (legacy) → `400` |
@@ -123,9 +122,11 @@ Media di-serve di `/uploads/...` (mis. `http://localhost:3000/uploads/broadcasts
 | `PORT` | `3000` | Port HTTP server |
 | `DB_PATH` | `db/wa-bot.db` | File SQLite |
 | `UPLOAD_DIR` | `uploads` | Direktori media broadcast |
-| `AUTH_DIR` | `.baileys_auth` | Session WhatsApp — per sesi di subfolder `<sessionId>/` |
+| `AUTH_DIR` | `.wwebjs_auth` | Session WhatsApp — per sesi di subfolder `session-<sessionId>/` |
+| `DEFAULT_DELAY_SECONDS` | `3` | Jeda default antar pesan (detik) bila pakai mode jeda |
 | `DEFAULT_RATE_PER_MINUTE` | `20` | Rate default bila tidak diisi saat create |
 | `MAX_RATE_PER_MINUTE` | `3600` | Batas atas rate (validasi) |
+| `WARMUP_DELAY_SECONDS` | `0` | Jeda pemanasan (detik) sebelum pesan pertama broadcast — mitigasi anti-ban untuk device baru |
 | `MAX_UPLOAD_SIZE` | `5242880` | Maks. ukuran gambar (5 MB) |
 | `CORS_ORIGINS` | *(kosong)* | Origin web yang diizinkan (pisah koma) |
 

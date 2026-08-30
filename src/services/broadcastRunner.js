@@ -2,6 +2,7 @@
 
 const { sleep } = require('../utils/sleep');
 const { toChatId } = require('../utils/phone');
+const config = require('../../config');
 const whatsappService = require('./whatsappService');
 const broadcastRepository = require('../repositories/broadcastRepository');
 const recipientRepository = require('../repositories/recipientRepository');
@@ -101,6 +102,21 @@ async function runBroadcast(broadcastId) {
   let sentCount = broadcast.sentCount;
   let failedCount = broadcast.failedCount;
   let fatal = false;
+
+  // Warm-up: jeda pemanasan sebelum pesan pertama (mitigasi anti-ban untuk device
+  // baru). Cek cancel sesudahnya supaya broadcast yang dibatalkan saat warmup
+  // tidak lanjut kirim.
+  const warmupMs = Math.round(config.warmupDelaySeconds * 1000);
+  if (warmupMs > 0 && !isCancelled(broadcast.id)) {
+    console.log(
+      `[runner] #${broadcast.id} warm-up ${config.warmupDelaySeconds}s sebelum pesan pertama…`
+    );
+    await sleep(warmupMs);
+    if (isCancelled(broadcast.id)) {
+      clearFlag(broadcast.id);
+      return;
+    }
+  }
 
   const recipients = recipientRepository.findPending(broadcast.id);
   for (const recipient of recipients) {

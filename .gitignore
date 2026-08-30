@@ -11,3 +11,5 @@ db/*.db-shm
 .env
 .DS_Store
 npm-debug.log*
+
+.claude/
