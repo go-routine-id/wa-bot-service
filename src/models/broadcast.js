@@ -32,6 +32,25 @@ function validateBroadcastCreate(body) {
     if (!Number.isFinite(delaySec) || delaySec <= 0) {
       throw new HttpError(400, 'delaySeconds harus berupa angka positif (detik per pesan)');
     }
+    // Batas BAWAH wajib: runner memakai delaySeconds dan mengabaikan ratePerMinute,
+    // jadi tanpa batas ini plafon anti-ban MAX_RATE_PER_MINUTE bisa ditembus
+    // (mis. delaySeconds 0.001 = 60.000 pesan/menit meski rate tercatat 3600).
+    const minDelaySeconds = 60 / config.maxRatePerMinute;
+    if (delaySec < minDelaySeconds) {
+      throw new HttpError(
+        400,
+        `Jeda per pesan minimal ${minDelaySeconds.toFixed(3)} detik ` +
+          `(setara batas ${config.maxRatePerMinute} pesan/menit)`
+      );
+    }
+    // Batas ATAS: jeda di atas ini membuat delayMs melewati kapasitas setTimeout
+    // 32-bit sehingga Node meng-clamp jadi 1 ms — jeda besar justru hilang total.
+    if (delaySec > config.maxDelaySeconds) {
+      throw new HttpError(
+        400,
+        `Jeda per pesan maksimal ${config.maxDelaySeconds} detik`
+      );
+    }
     delaySeconds = delaySec;
     ratePerMinute = Math.max(1, Math.min(config.maxRatePerMinute, Math.round(60 / delaySec)));
   } else {

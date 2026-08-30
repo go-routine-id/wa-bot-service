@@ -29,16 +29,23 @@ function delayForRate(ratePerMinute) {
   return Math.floor(60000 / ratePerMinute);
 }
 
+/** Batas aman setTimeout (32-bit signed). Di atas ini Node meng-clamp jadi 1 ms. */
+const MAX_TIMEOUT_MS = 2147483647;
+
 /**
  * Jeda antar pesan (ms) untuk sebuah broadcast. Bila delay_seconds tersimpan
  * (mode "jeda per pesan"), pakai nilai presisinya; selain itu derive dari
- * rate_per_minute. delay_seconds REAL memungkinkan jeda > 60 detik tanpa cap.
+ * rate_per_minute.
  */
 function delayForBroadcast(broadcast) {
-  if (broadcast.delaySeconds != null && broadcast.delaySeconds > 0) {
-    return Math.round(broadcast.delaySeconds * 1000);
-  }
-  return delayForRate(broadcast.ratePerMinute);
+  const raw =
+    broadcast.delaySeconds != null && broadcast.delaySeconds > 0
+      ? Math.round(broadcast.delaySeconds * 1000)
+      : delayForRate(broadcast.ratePerMinute);
+  // Backstop: validasi input sudah membatasi delaySeconds, tapi baris lama di DB
+  // (atau perubahan config) bisa melampaui kapasitas setTimeout — clamp ke batas
+  // aman supaya jeda besar TIDAK malah berubah jadi 1 ms.
+  return Math.min(raw, MAX_TIMEOUT_MS);
 }
 
 /**
@@ -61,8 +68,8 @@ async function waitForConnection(broadcast, timeoutMs) {
  * Proses satu recipient.
  * return: 'sent' | 'failed' | 'stopped' (stopped = cancel / koneksi fatal).
  */
-async function processRecipient(broadcast, recipient) {
-  const delayMs = delayForBroadcast(broadcast);
+async function processRecipient(broadcast, recipient, { applyDelay = true } = {}) {
+  const delayMs = applyDelay ? delayForBroadcast(broadcast) : 0;
 
   if (isCancelled(broadcast.id)) return 'stopped';
 
@@ -93,20 +100,30 @@ async function processRecipient(broadcast, recipient) {
     recipientRepository.updateStatus(recipient.id, { status: 'failed', error: err.message });
     return 'failed';
   } finally {
-    // delay tetap diterapkan setelah tiap percobaan (sukses maupun gagal)
-    await sleep(delayMs);
+    // Delay diterapkan setelah tiap percobaan (sukses maupun gagal), KECUALI
+    // setelah recipient terakhir — menunggu di sana hanya menahan broadcast di
+    // status 'running' tanpa gunanya (bisa sampai 1 jam dengan jeda besar).
+    if (delayMs > 0) await sleep(delayMs);
   }
 }
 
 /** Jalankan sebuah broadcast sampai selesai/cancel. Dipakai queue (sequential) & parallel. */
 async function runBroadcast(broadcastId) {
   let broadcast = broadcastRepository.findById(broadcastId);
-  if (!broadcast) return;
+  if (!broadcast) {
+    clearFlag(broadcastId); // jangan tinggalkan flag yatim di memori
+    return;
+  }
 
   // Broadcast legacy (pra-multi-session, session_id NULL) → kirim via sesi 'utama'.
   broadcast.sessionId = broadcast.sessionId || 'utama';
 
-  if (isCancelled(broadcast.id)) return;
+  // Status DB ikut diperiksa: broadcast yang sudah dibatalkan sebelum runner
+  // sempat jalan tidak boleh diproses, dan flag-nya dibersihkan di sini.
+  if (isCancelled(broadcast.id) || broadcast.status === 'cancelled') {
+    clearFlag(broadcast.id);
+    return;
+  }
 
   broadcastRepository.markRunning(broadcast.id);
   broadcast = broadcastRepository.findById(broadcast.id); // re-read (started_at dll.)
@@ -131,9 +148,11 @@ async function runBroadcast(broadcastId) {
   }
 
   const recipients = recipientRepository.findPending(broadcast.id);
-  for (const recipient of recipients) {
+  for (let i = 0; i < recipients.length; i += 1) {
+    const recipient = recipients[i];
     if (isCancelled(broadcast.id)) break;
-    const result = await processRecipient(broadcast, recipient);
+    const isLast = i === recipients.length - 1;
+    const result = await processRecipient(broadcast, recipient, { applyDelay: !isLast });
     if (result === 'sent') sentCount += 1;
     else if (result === 'failed') failedCount += 1;
     else if (result === 'stopped') break;
@@ -209,8 +228,8 @@ function startQueueWorker() {
   runQueueLoop().catch((err) => console.error('[runner] queue loop berhenti:', err));
 }
 
-/** Bangunkan worker saat ada broadcast queue baru. */
-function enqueue(broadcastId) {
+/** Bangunkan worker saat ada broadcast queue baru (worker sendiri yang memilih FIFO). */
+function enqueue() {
   if (queueWake) {
     const wake = queueWake;
     queueWake = null;

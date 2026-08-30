@@ -2,6 +2,7 @@
 
 const { HttpError } = require('../utils/httpError');
 const mediaService = require('../services/mediaService');
+const templateRepository = require('../repositories/templateRepository');
 
 const mediaController = {
   upload(req, res) {
@@ -17,6 +18,13 @@ const mediaController = {
     }
     if (!mediaPath.startsWith('templates/')) {
       throw new HttpError(400, 'Hanya media template yang bisa dihapus lewat endpoint ini');
+    }
+    // Endpoint ini dipakai frontend untuk MEMBATALKAN upload yang belum tersimpan.
+    // Kalau file ternyata sudah direferensikan sebuah template, menghapusnya akan
+    // membuat gambar template rusak — tolak, sejalan dengan cleanupMediaIfUnused
+    // di templateController.
+    if (templateRepository.findByMediaPath(mediaPath)) {
+      throw new HttpError(409, 'Media masih dipakai template — hapus/ubah templatenya dulu');
     }
     mediaService.delete(mediaPath);
     res.json({ ok: true });

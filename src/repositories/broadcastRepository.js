@@ -1,8 +1,14 @@
 'use strict';
 
 const { getDb } = require('../../config/database');
+const { INVALID_NUMBER_ERROR } = require('../models/broadcast');
 
 const db = getDb();
+
+/** Literal string aman untuk disisipkan ke SQL (konstanta kode, bukan input user). */
+function sqlLiteral(value) {
+  return `'${String(value).replace(/'/g, "''")}'`;
+}
 
 const COLUMNS = `b.id, b.template_id AS templateId, b.mode, b.rate_per_minute AS ratePerMinute,
   b.delay_seconds AS delaySeconds, b.message_text AS messageText, b.media_path AS mediaPath, b.status,
@@ -11,7 +17,7 @@ const COLUMNS = `b.id, b.template_id AS templateId, b.mode, b.rate_per_minute AS
   (SELECT COUNT(*) FROM broadcast_recipients br
      WHERE br.broadcast_id = b.id
        AND br.status = 'failed'
-       AND COALESCE(br.error, '') != 'invalid number') AS retryableFailedCount,
+       AND COALESCE(br.error, '') != ${sqlLiteral(INVALID_NUMBER_ERROR)}) AS retryableFailedCount,
   b.error, b.created_at AS createdAt, b.started_at AS startedAt, b.finished_at AS finishedAt`;
 
 const FROM = `FROM broadcasts b LEFT JOIN sessions s ON s.id = b.session_id`;

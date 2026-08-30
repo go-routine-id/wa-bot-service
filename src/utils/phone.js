@@ -8,6 +8,9 @@ function normalizePhone(raw) {
   return String(raw ?? '').replace(/\D/g, '');
 }
 
+/** Panjang maksimal label entri tak valid yang disimpan (nomor asli maks 15 digit). */
+const MAX_INVALID_LABEL = 32;
+
 /** Valid: 8–15 digit (rentang panjang nomor internasional). */
 function isValidPhone(number) {
   return /^\d{8,15}$/.test(number);
@@ -37,7 +40,10 @@ function parseTargets(raw) {
   for (const part of parts) {
     const number = normalizePhone(part);
     if (!isValidPhone(number)) {
-      invalid.push(number || part);
+      // Token tanpa digit sama sekali disimpan apa adanya supaya user mengenali
+      // entri mana yang salah ketik — tapi dipotong agar teks sampah panjang
+      // tidak masuk utuh ke DB dan tabel history.
+      invalid.push(number || part.slice(0, MAX_INVALID_LABEL));
       continue;
     }
     if (seen.has(number)) continue; // dedupe

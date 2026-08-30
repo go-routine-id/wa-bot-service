@@ -263,6 +263,10 @@ const broadcastService = {
     broadcastRunner.setCancelled(id, true);
     recipientRepository.bulkUpdateStatus(id, ['pending', 'sending'], 'skipped', 'Dibatalkan pengguna');
     broadcastRepository.markCancelled(id, broadcast.sentCount, broadcast.failedCount);
+    // Counts di atas dibaca SEBELUM cancel, sementara runner mungkin masih sempat
+    // menyelesaikan satu recipient → hitung ulang dari baris recipient yang nyata
+    // supaya angka akhir tidak mundur.
+    broadcastRepository.recalcCounts(id);
     return broadcastRepository.findById(id);
   },
 
@@ -277,6 +281,7 @@ const broadcastService = {
       broadcastRunner.setCancelled(b.id, true);
       recipientRepository.bulkUpdateStatus(b.id, ['pending', 'sending'], 'skipped', errorMsg);
       broadcastRepository.markCancelled(b.id, b.sentCount, b.failedCount);
+      broadcastRepository.recalcCounts(b.id); // sinkronkan dengan baris recipient nyata
     }
     if (running.length) {
       console.log(`[session] batalkan ${running.length} broadcast sesi "${sessionId}"`);
