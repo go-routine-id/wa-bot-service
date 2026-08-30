@@ -11,6 +11,7 @@ router.get('/:id/status', sessionController.status);
 router.patch('/:id', sessionController.rename);
 router.delete('/:id', sessionController.remove);
 router.post('/:id/rescan', sessionController.rescan);
+router.post('/:id/pairing-code', sessionController.pairingCode);
 router.post('/:id/logout', sessionController.logout);
 
 module.exports = router;

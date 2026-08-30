@@ -8,7 +8,7 @@ Frontend web ada di repo terpisah: [**wa-bot-web**](https://github.com/go-routin
 
 ## Konsep: sesi
 
-- **Satu sesi = satu nomor WhatsApp yang di-pair** lewat QR. Kamu bisa pair beberapa nomor sekaligus (`utama`, `bisnis`, `cs`, …) dan tiap nomor berjalan independen.
+- **Satu sesi = satu nomor WhatsApp yang di-pair** lewat QR atau kode pairing. Kamu bisa pair beberapa nomor sekaligus (`utama`, `bisnis`, `cs`, …) dan tiap nomor berjalan independen.
 - Saat membuat broadcast, kamu **memilih satu sesi sebagai pengirim**. Broadcast lama (sebelum fitur multi-sesi) tidak punya sesi → ditandai `—` di history.
 - Sesi disimpan di `AUTH_DIR/session-<sessionId>/` dan ter-persist di tabel `sessions`. Status runtime (QR, koneksi) hanya di memori.
 
@@ -72,15 +72,16 @@ Perilaku ini berlaku **per sesi**:
 | Fase | Perilaku |
 |---|---|
 | Tambah sesi baru | Status `connecting` → QR tampil di kartu sesi sampai ter-pair |
-| QR (belum discan) | QR stabil & tetap tampil (whatsapp-web.js tidak merotasi QR) — scan kapan pun |
+| QR (belum discan) | QR dirotasi library tanpa batas (`qrMaxRetries: 0`); kartu sesi selalu menampilkan QR terbaru selama polling jalan — jangan cache gambar QR pertama |
 | Request manual | Klik **Request QR baru** → koneksi & QR baru dibuat |
+| Pairing lewat kode | Klik **Kode pairing** → masukkan nomor HP → kode 8 karakter muncul (diperbarui tiap 3 menit). Hanya untuk sesi yang belum ter-pair |
 | Setelah terhubung | Session tersimpan di `AUTH_DIR/session-<sessionId>`; restart service → auto-connect tanpa scan ulang |
 | Koneksi putus setelah pernah terhubung | Auto-reconnect backoff (3–30 detik) memakai session tersimpan — **bukan pairing baru** |
 | Sesi di-logout / auth_failure | Status `auth_failure` → klik rescan (kredensial dibuang, QR baru muncul) |
 | Sesi dibuka instance lain | Status `disconnected` → klik **Hubungkan** untuk mengambil alih (take-over manual) |
 | Logout | Sesi dihentikan dari WhatsApp; kredensial dihapus tapi baris sesi tetap ada (bisa scan ulang) |
 
-> **Catatan:** pairing hanya via scan QR (whatsapp-web.js tidak mendukung pairing code 8 digit).
+> **Catatan:** tersedia dua jalur pairing — scan QR atau kode 8 karakter (`pairWithPhoneNumber` bawaan whatsapp-web.js). Satu sesi memakai salah satu jalur per percobaan koneksi.
 
 ## Format nomor
 
@@ -100,6 +101,7 @@ Perilaku ini berlaku **per sesi**:
 | DELETE | `/api/sessions/:id` | hapus sesi + kredensial; broadcast pending/running yang memakainya dibatalkan |
 | GET | `/api/sessions/:id/status` | status satu sesi |
 | POST | `/api/sessions/:id/rescan` | buat ulang koneksi sesi (QR baru / hubungkan ulang) |
+| POST | `/api/sessions/:id/pairing-code` | minta kode pairing 8 karakter `{ phone }` (hanya sesi yang belum ter-pair) |
 | POST | `/api/sessions/:id/logout` | logout sesi dari WhatsApp (kredensial dihapus, baris tetap) |
 
 ### Broadcast & lainnya
@@ -123,9 +125,9 @@ Media di-serve di `/uploads/...` (mis. `http://localhost:3000/uploads/broadcasts
 | `DB_PATH` | `db/wa-bot.db` | File SQLite |
 | `UPLOAD_DIR` | `uploads` | Direktori media broadcast |
 | `AUTH_DIR` | `.wwebjs_auth` | Session WhatsApp — per sesi di subfolder `session-<sessionId>/` |
-| `DEFAULT_DELAY_SECONDS` | `3` | Jeda default antar pesan (detik) bila pakai mode jeda |
 | `DEFAULT_RATE_PER_MINUTE` | `20` | Rate default bila tidak diisi saat create |
-| `MAX_RATE_PER_MINUTE` | `3600` | Batas atas rate (validasi) |
+| `MAX_RATE_PER_MINUTE` | `3600` | Batas atas rate; sekaligus batas **bawah** jeda per pesan (`60 / nilai ini`) |
+| `MAX_DELAY_SECONDS` | `3600` | Batas atas jeda per pesan (detik) |
 | `WARMUP_DELAY_SECONDS` | `0` | Jeda pemanasan (detik) sebelum pesan pertama broadcast — mitigasi anti-ban untuk device baru |
 | `MAX_UPLOAD_SIZE` | `5242880` | Maks. ukuran gambar (5 MB) |
 | `CORS_ORIGINS` | *(kosong)* | Origin web yang diizinkan (pisah koma) |
@@ -140,7 +142,7 @@ src/
   controllers/     # handler HTTP
   routes/          # definisi route REST
   middleware/      # upload, CORS, error handler
-  utils/           # helper (phone, sleep, httpError, legacyAuthMigration)
+  utils/           # helper (phone, sleep, httpError)
 config/            # config + koneksi DB
 db/migrations/     # skema SQLite (002_sessions: tabel sessions + kolom broadcasts.session_id)
 uploads/           # media broadcast (dari env UPLOAD_DIR)

@@ -12,6 +12,10 @@ const { HttpError } = require('../utils/httpError');
 // ulang terus sampai stopReconnect (destroy/logout/delete) atau auth_failure.
 const RECONNECT_DELAYS = [3000, 5000, 10000, 20000, 30000]; // ms
 
+// whatsapp-web.js meregenerasi kode pairing tiap interval ini (default library 3
+// menit). Dipakai juga sebagai masa berlaku yang ditampilkan di UI.
+const PAIRING_CODE_INTERVAL_MS = 3 * 60 * 1000;
+
 /**
  * Registry sesi runtime. Sumber kebenaran keberadaan sesi = tabel `sessions`;
  * Map ini hanya state client/status/QR per sesi.
@@ -38,7 +42,20 @@ function ensureAuthDir() {
  * "belum ter-pair" → dipaksa scan QR ulang setiap boot.
  */
 function hasCreds(id) {
-  return fs.existsSync(path.join(config.authDir, `session-${id}`, '.linked'));
+  const dir = path.join(config.authDir, `session-${id}`);
+  if (fs.existsSync(path.join(dir, '.linked'))) return true;
+  // Fallback bila marker hilang (mis. proses mati setelah pairing sukses tapi
+  // sebelum event 'authenticated' sempat menulis marker): deteksi sesi WhatsApp
+  // Web yang benar-benar tersimpan di profil Chromium. Tanpa ini, profil yang
+  // masih sah dianggap belum ter-pair dan akan DIHAPUS oleh rescan.
+  try {
+    const idbDir = path.join(dir, 'Default', 'IndexedDB');
+    return fs
+      .readdirSync(idbDir)
+      .some((entry) => entry.startsWith('https_web.whatsapp.com'));
+  } catch (_) {
+    return false; // folder tak ada / tak terbaca → anggap belum ter-pair
+  }
 }
 
 function sessionExists(id) {
@@ -74,10 +91,13 @@ function createSession(id, name) {
     id,
     name,
     authDir: path.join(config.authDir, `session-${id}`),
-    // uninitialized | connecting | qr | connected | disconnected | auth_failure
+    // uninitialized | connecting | qr | pairing_code | connected | disconnected | auth_failure
     status: 'uninitialized',
     qrDataUrl: null,
     qrExpiresAt: null,
+    pairingPhone: null, // nomor tujuan jalur kode pairing; null = jalur QR biasa
+    pairingCode: null, // kode 8 karakter dari event 'code'
+    pairingCodeExpiresAt: null,
     userInfo: null,
     lastError: null,
     client: null, // instance whatsapp-web.js Client aktif
@@ -137,8 +157,24 @@ function wireClientEvents(sess, client, gen) {
     if (sess.gen !== gen || sess.client !== client) return;
     sess.status = 'qr';
     sess.qrDataUrl = dataUrl;
-    sess.qrExpiresAt = null; // QR wwebjs stabil (qrMaxRetries 0 = tak berotasi), tanpa TTL
+    // qrMaxRetries: 0 berarti refresh TANPA BATAS (cabang batas hanya jalan bila > 0),
+    // jadi QR memang berotasi dan handler ini menimpa qrDataUrl tiap kali. Tidak ada
+    // TTL yang kita kelola sendiri — konsumen harus polling /status, bukan meng-cache
+    // gambar QR pertama.
+    sess.qrExpiresAt = null;
     sess.lastError = null;
+  });
+
+  // Jalur kode pairing: library memancarkan kode 8 karakter dan meregenerasinya
+  // tiap PAIRING_CODE_INTERVAL_MS selama belum dipakai.
+  client.on('code', (code) => {
+    if (sess.gen !== gen || sess.client !== client) return;
+    sess.status = 'pairing_code';
+    sess.pairingCode = code;
+    sess.pairingCodeExpiresAt = Date.now() + PAIRING_CODE_INTERVAL_MS;
+    sess.qrDataUrl = null;
+    sess.lastError = null;
+    console.log(`[wa:${sess.id}] kode pairing dibuat:`, code);
   });
 
   // Session berhasil diautentikasi & disimpan ke LocalAuth → tulis marker valid.
@@ -157,6 +193,9 @@ function wireClientEvents(sess, client, gen) {
     sess.status = 'connected';
     sess.qrDataUrl = null;
     sess.qrExpiresAt = null;
+    sess.pairingCode = null;
+    sess.pairingCodeExpiresAt = null;
+    sess.pairingPhone = null;
     sess.lastError = null;
     const wid = client.info?.wid;
     sess.userInfo = {
@@ -167,7 +206,7 @@ function wireClientEvents(sess, client, gen) {
     console.log(`[wa:${sess.id}] terhubung sebagai`, sess.userInfo.name, sess.userInfo.number);
   });
 
-  client.on('auth_failure', (message) => {
+  client.on('auth_failure', async (message) => {
     if (sess.gen !== gen || sess.client !== client) return;
     console.error(`[wa:${sess.id}] auth_failure:`, message);
     sess.status = 'auth_failure';
@@ -175,33 +214,41 @@ function wireClientEvents(sess, client, gen) {
     sess.stopReconnect = true;
     clearReconnect(sess);
     sess.client = null;
-    // Destroy DULU sebelum buang profil — Chromium masih hidup saat auth_failure.
-    // Re-entrant 'disconnected' dari destroy diabaikan: sess.client sudah null.
-    client.destroy().catch(() => {});
-    // auth_failure = LocalAuth basi/ditolak → buang profil agar QR baru muncul.
+    sess.pairingCode = null;
+    sess.pairingCodeExpiresAt = null;
+    // Tunggu Chromium BENAR-BENAR tutup sebelum profil dihapus. Kalau rmSync jalan
+    // saat browser masih hidup, Chromium menulis ulang sebagian profil ketika
+    // shutdown → tersisa profil setengah jadi + lock file yang membuat start()
+    // berikutnya gagal launch.
+    await client.destroy().catch(() => {});
     cleanupCreds(sess);
   });
 
-  client.on('disconnected', (reason) => {
+  client.on('disconnected', async (reason) => {
     if (sess.gen !== gen || sess.client !== client) return;
     console.log(`[wa:${sess.id}] terputus:`, reason);
     sess.userInfo = null;
     sess.qrDataUrl = null;
     sess.qrExpiresAt = null;
+    sess.pairingCode = null;
+    sess.pairingCodeExpiresAt = null;
     sess.client = null;
-    // Tutup Chromium agar tak bocor & tak mengunci user-data-dir saat reconnect
-    // (jeda reconnect 3s sudah cukup bagi Chromium untuk benar-benar tutup).
-    client.destroy().catch(() => {});
 
     // Logout eksplisit dari perangkat tertaut → sesi invalid, butuh scan ulang.
+    // destroy() DI-AWAIT dulu supaya profil tidak dihapus saat Chromium masih hidup.
     if (reason === 'LOGOUT') {
       sess.status = 'auth_failure';
       sess.lastError = 'Sesi di-logout dari WhatsApp';
       sess.stopReconnect = true;
       clearReconnect(sess);
+      await client.destroy().catch(() => {});
       cleanupCreds(sess);
       return;
     }
+
+    // Selain LOGOUT profil tidak dihapus, jadi destroy cukup fire-and-forget —
+    // yang penting Chromium tidak bocor & tidak mengunci user-data-dir.
+    client.destroy().catch(() => {});
 
     // Session dibuka instance/browser lain (setara 440 connectionReplaced Baileys).
     // JANGAN auto-reconnect — perang ping-pong tanpa akhir memperebutkan sesi.
@@ -257,6 +304,17 @@ async function start(id) {
         headless: true,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
       },
+      // Bila sesi diminta pairing lewat kode, library mendaftarkan event 'code'
+      // (bukan 'qr') dan otomatis meminta kode ke WhatsApp saat initialize.
+      ...(sess.pairingPhone
+        ? {
+            pairWithPhoneNumber: {
+              phoneNumber: sess.pairingPhone,
+              showNotification: true,
+              intervalMs: PAIRING_CODE_INTERVAL_MS,
+            },
+          }
+        : {}),
     });
 
     if (sess.gen !== gen) {
@@ -281,7 +339,16 @@ async function start(id) {
       // reject TANPA event auth_failure (mis. Chromium gagal launch / jaringan
       // transient): ini BUKAN sesi invalid → jangan labeli auth_failure ("scan
       // ulang"). Retry reconnect dengan backoff.
-      if (sess.status === 'connecting') {
+      //
+      // 'qr'/'pairing_code' WAJIB ikut: library memancarkan qr/code dari dalam
+      // inject(), yaitu SEBELUM initialize() selesai. Bila langkah setelahnya
+      // reject (mis. halaman navigasi saat QR discan), tanpa cabang ini status
+      // tersangkut di 'qr' dengan client null → QR mati terus tampil selamanya
+      // dan reconnect tak pernah dijadwalkan.
+      if (['connecting', 'qr', 'pairing_code'].includes(sess.status)) {
+        sess.qrDataUrl = null;
+        sess.pairingCode = null;
+        sess.pairingCodeExpiresAt = null;
         sess.status = 'disconnected';
         sess.lastError = err.message || 'Gagal inisialisasi WhatsApp Web';
         scheduleReconnect(sess);
@@ -307,6 +374,10 @@ async function destroy(id) {
   sess.status = 'uninitialized';
   sess.qrDataUrl = null;
   sess.qrExpiresAt = null;
+  sess.pairingCode = null;
+  sess.pairingCodeExpiresAt = null;
+  // pairingPhone sengaja TIDAK di-reset di sini: requestPairingCode memanggil
+  // destroy() di tengah alurnya. rescan/logout yang mengembalikannya ke jalur QR.
   sess.userInfo = null;
   sess.lastError = null;
   if (client) {
@@ -395,14 +466,75 @@ async function rescan(id) {
     registry.set(id, sess);
   }
   const wasAuthFailure = sess.status === 'auth_failure'; // destroy me-reset status
+  sess.pairingPhone = null; // rescan = kembali ke jalur QR
   sess.stopReconnect = true; // cegah timer lama menembak selama destroy
   await destroy(id);
+  // WAJIB: tunggu start() yang mungkin masih berjalan sampai selesai. Dengan
+  // whatsapp-web.js, initialize() menggantung 10–30 detik (launch Chromium + load
+  // web.whatsapp.com). Kalau tidak ditunggu, start() di bawah hanya mengembalikan
+  // promise LAMA (guard `if (sess.starting)`) yang lalu batal sendiri karena gen
+  // sudah berubah → tidak ada client baru, tidak ada QR, dan tidak ada reconnect:
+  // sesi diam di 'uninitialized' padahal API sudah membalas ok.
+  if (sess.starting) await sess.starting.catch(() => {});
   if (wasAuthFailure || !hasCreds(id)) {
     clearReconnect(sess);
     cleanupCreds(sess);
   }
   sess.stopReconnect = false;
   await start(id);
+}
+
+/**
+ * Normalisasi nomor untuk pairing code: WhatsApp mewajibkan format internasional
+ * tanpa "+" (E.164 digit-only, 8–15 digit, tidak diawali 0).
+ */
+function normalizePairingPhone(raw) {
+  const digits = String(raw ?? '').replace(/\D/g, '');
+  if (!/^[1-9]\d{7,14}$/.test(digits)) {
+    throw new HttpError(
+      400,
+      'Nomor HP tidak valid — pakai format internasional tanpa "+" atau angka 0 di depan (mis. 6281234567890)'
+    );
+  }
+  return digits;
+}
+
+/**
+ * Pairing lewat kode 8 karakter (alternatif scan QR). whatsapp-web.js mendukung
+ * ini via opsi `pairWithPhoneNumber` + event 'code'; kode muncul async di status
+ * sesi (dipoll UI). Hanya untuk sesi TANPA pairing valid — sesi yang sudah
+ * ter-pair memakai "Hubungkan" (rescan me-resume kredensial), karena membuang
+ * kredensial sah demi pairing baru akan melepas linked device yang masih hidup.
+ */
+async function requestPairingCode(id, phone) {
+  if (!sessionExists(id)) throw new HttpError(404, 'Sesi tidak ditemukan');
+  const normalized = normalizePairingPhone(phone);
+  let sess = registry.get(id);
+  if (!sess) {
+    const row = sessionRepository.findById(id);
+    sess = createSession(id, row.name);
+    registry.set(id, sess);
+  }
+  if (sess.status === 'connected') {
+    throw new HttpError(409, 'Sesi sudah terhubung — logout dulu bila ingin pairing ulang.');
+  }
+  if (hasCreds(id)) {
+    throw new HttpError(
+      409,
+      'Sesi masih punya pairing valid — klik "Hubungkan", atau logout/hapus dulu untuk pairing baru.'
+    );
+  }
+  sess.stopReconnect = true;
+  await destroy(id);
+  if (sess.starting) await sess.starting.catch(() => {});
+  clearReconnect(sess);
+  cleanupCreds(sess); // sisa pairing gagal tak layak di-resume
+  sess.pairingPhone = normalized; // penanda jalur kode — dibaca saat membuat Client
+  sess.pairingCode = null;
+  sess.pairingCodeExpiresAt = null;
+  sess.stopReconnect = false;
+  await start(id);
+  return getStatus(id);
 }
 
 /** Logout penuh satu sesi: invalidasi di server WhatsApp + hapus kredensial; row sesi tetap. */
@@ -430,6 +562,9 @@ async function logoutSession(id) {
     sess.status = 'uninitialized';
     sess.qrDataUrl = null;
     sess.qrExpiresAt = null;
+    sess.pairingPhone = null;
+    sess.pairingCode = null;
+    sess.pairingCodeExpiresAt = null;
     sess.userInfo = null;
     sess.lastError = null;
   }
@@ -456,10 +591,9 @@ function getStatus(id) {
     hasQr: sess?.status === 'qr' && !!sess?.qrDataUrl,
     qrDataUrl: sess?.qrDataUrl ?? null,
     qrExpiresAt: sess?.qrExpiresAt ?? null,
-    // Pairing code 8 digit tidak didukung whatsapp-web.js (QR only) — selalu false/null.
-    hasPairingCode: false,
-    pairingCode: null,
-    pairingCodeExpiresAt: null,
+    hasPairingCode: sess?.status === 'pairing_code' && !!sess?.pairingCode,
+    pairingCode: sess?.pairingCode ?? null,
+    pairingCodeExpiresAt: sess?.pairingCodeExpiresAt ?? null,
     userInfo: sess?.userInfo ?? null,
     lastError: sess?.lastError ?? null,
   };
@@ -513,5 +647,6 @@ module.exports = {
   isConnected,
   sendMessage,
   rescan,
+  requestPairingCode,
   logoutSession,
 };
