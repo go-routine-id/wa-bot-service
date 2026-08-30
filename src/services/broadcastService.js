@@ -55,6 +55,24 @@ function createCore({ templateId, sessionId, mode, ratePerMinute, delaySeconds =
   return broadcastRepository.findById(broadcast.id);
 }
 
+/**
+ * Daftar recipient hanya boleh diubah selama broadcast BELUM diproses.
+ *
+ * Broadcast 'running' memakai snapshot recipient di memori runner (runBroadcast
+ * mengambil findPending sekali di awal): nomor baru tidak akan terkirim, dan
+ * nomor yang dihapus TETAP dikirim sementara update statusnya jadi no-op diam-diam.
+ * Status final (completed/failed/cancelled) adalah catatan riwayat — untuk kirim
+ * ulang pakai retry, bukan mengubah riwayat.
+ */
+function assertRecipientsEditable(broadcast) {
+  if (broadcast.status !== 'pending') {
+    throw new HttpError(
+      400,
+      `Daftar nomor hanya bisa diubah sebelum broadcast diproses (status sekarang: ${broadcast.status})`
+    );
+  }
+}
+
 const broadcastService = {
   /**
    * Buat broadcast: validasi → resolve pesan dari template/teks langsung →
@@ -157,6 +175,71 @@ const broadcastService = {
       `[retry] #${id} → #${broadcast.id} via sesi "${targetSessionId}" (${failedRecipients.length} penerima gagal dikirim ulang)`
     );
     return broadcast;
+  },
+
+  /**
+   * Tambah nomor tujuan ke broadcast yang belum diproses.
+   * Nomor duplikat diabaikan (UNIQUE broadcast_id+recipient_number), nomor tak
+   * valid tetap dicatat sebagai 'failed' supaya transparan seperti alur create.
+   */
+  addRecipients(id, rawRecipients) {
+    const broadcast = broadcastRepository.findById(id);
+    if (!broadcast) throw new HttpError(404, 'Broadcast tidak ditemukan');
+    assertRecipientsEditable(broadcast);
+
+    const { valid, invalid } = parseTargets(rawRecipients);
+    if (valid.length + invalid.length === 0) {
+      throw new HttpError(400, 'Tidak ada nomor tujuan yang valid');
+    }
+
+    const items = [
+      ...valid.map((n) => ({ number: n, status: 'pending' })),
+      ...invalid.map((n) => ({ number: n, status: 'failed', error: INVALID_NUMBER_ERROR })),
+    ];
+    const added = recipientRepository.bulkInsert(id, items);
+    const skipped = items.length - added;
+
+    broadcastRepository.recalcCounts(id);
+    console.log(
+      `[recipients] #${id} +${added} nomor${skipped ? ` (${skipped} duplikat diabaikan)` : ''}`
+    );
+    return { ...broadcastService.getDetail(id), added, skipped };
+  },
+
+  /**
+   * Hapus satu nomor dari broadcast yang belum diproses.
+   * Recipient 'sent' adalah bukti pesan benar-benar terkirim — menghapusnya
+   * butuh konfirmasi eksplisit (confirmSent) dan dicatat di log sebagai warning.
+   */
+  removeRecipient(id, recipientId, { confirmSent = false } = {}) {
+    const broadcast = broadcastRepository.findById(id);
+    if (!broadcast) throw new HttpError(404, 'Broadcast tidak ditemukan');
+    assertRecipientsEditable(broadcast);
+
+    const recipient = recipientRepository.findById(recipientId);
+    if (!recipient || recipient.broadcastId !== id) {
+      throw new HttpError(404, 'Nomor tidak ditemukan di broadcast ini');
+    }
+
+    if (recipient.status === 'sent' && !confirmSent) {
+      throw new HttpError(
+        409,
+        'Pesan ke nomor ini sudah terkirim — menghapusnya menghilangkan jejak pengiriman. Konfirmasi dulu untuk melanjutkan.'
+      );
+    }
+
+    recipientRepository.remove(recipientId);
+    broadcastRepository.recalcCounts(id);
+    if (recipient.status === 'sent') {
+      console.warn(
+        `[recipients] #${id} HAPUS nomor TERKIRIM ${recipient.recipientNumber} (dikonfirmasi user)`
+      );
+    } else {
+      console.log(
+        `[recipients] #${id} hapus nomor ${recipient.recipientNumber} (${recipient.status})`
+      );
+    }
+    return broadcastService.getDetail(id);
   },
 
   list({ limit, offset } = {}) {

@@ -29,6 +29,16 @@ const recipientRepository = {
     return insert();
   },
 
+  /** Satu recipient by id (dipakai saat hapus: perlu cek status & broadcast pemiliknya). */
+  findById(id) {
+    return db.prepare(`SELECT ${COLUMNS} FROM broadcast_recipients WHERE id = ?`).get(id) ?? null;
+  },
+
+  /** Hapus satu recipient. Mengembalikan jumlah baris terhapus (0 = tidak ada). */
+  remove(id) {
+    return db.prepare('DELETE FROM broadcast_recipients WHERE id = ?').run(id).changes;
+  },
+
   findByBroadcastId(broadcastId) {
     return db
       .prepare(`SELECT ${COLUMNS} FROM broadcast_recipients WHERE broadcast_id = ? ORDER BY id ASC`)

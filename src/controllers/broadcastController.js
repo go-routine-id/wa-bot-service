@@ -29,6 +29,25 @@ const broadcastController = {
     res.json({ data });
   },
 
+  /** Tambah nomor tujuan: body { recipients }. Hanya broadcast berstatus 'pending'. */
+  addRecipients(req, res) {
+    const data = broadcastService.addRecipients(Number(req.params.id), req.body?.recipients);
+    res.status(201).json({ data });
+  },
+
+  /**
+   * Hapus satu nomor tujuan. Recipient yang sudah 'sent' ditolak 409 kecuali
+   * query ?confirmSent=true (konfirmasi eksplisit user di UI).
+   */
+  removeRecipient(req, res) {
+    const data = broadcastService.removeRecipient(
+      Number(req.params.id),
+      Number(req.params.recipientId),
+      { confirmSent: req.query?.confirmSent === 'true' }
+    );
+    res.json({ data });
+  },
+
   retry(req, res) {
     const data = broadcastService.retry(Number(req.params.id), {
       sessionId: req.body?.sessionId,

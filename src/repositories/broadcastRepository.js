@@ -129,6 +129,22 @@ const broadcastRepository = {
       .all(sessionId, ...statuses);
   },
 
+  /**
+   * Hitung ulang counter dari isi tabel recipient (bukan increment manual).
+   * Dipakai setelah daftar recipient diubah (tambah/hapus nomor) supaya
+   * total/sent/failed selalu cocok dengan baris yang benar-benar ada.
+   */
+  recalcCounts(id) {
+    db.prepare(
+      `UPDATE broadcasts SET
+         total_recipients = (SELECT COUNT(*) FROM broadcast_recipients WHERE broadcast_id = ?),
+         sent_count       = (SELECT COUNT(*) FROM broadcast_recipients WHERE broadcast_id = ? AND status = 'sent'),
+         failed_count     = (SELECT COUNT(*) FROM broadcast_recipients WHERE broadcast_id = ? AND status = 'failed')
+       WHERE id = ?`
+    ).run(id, id, id, id);
+    return this.findById(id);
+  },
+
   /** Set media_path (dipakai setelah media di-copy ke folder broadcast). */
   setMediaPath(id, mediaPath) {
     db.prepare('UPDATE broadcasts SET media_path = ? WHERE id = ?').run(mediaPath, id);
