@@ -16,8 +16,11 @@ const RECONNECT_DELAYS = [3000, 5000, 10000, 20000, 30000]; // ms
 // menit). Dipakai juga sebagai masa berlaku yang ditampilkan di UI.
 const PAIRING_CODE_INTERVAL_MS = 3 * 60 * 1000;
 
-// Batas menunggu start() yang masih in-flight sebelum memulai yang baru.
-const START_SETTLE_TIMEOUT_MS = 20000;
+// Batas menunggu start() yang masih in-flight sebelum memulai yang baru, dan
+// batas menutup client. Keduanya dijaga kecil supaya total waktu handler HTTP
+// tetap jauh di bawah timeout fetch browser.
+const START_SETTLE_TIMEOUT_MS = 8000;
+const DESTROY_TIMEOUT_MS = 8000;
 
 /**
  * Registry sesi runtime. Sumber kebenaran keberadaan sesi = tabel `sessions`;
@@ -180,8 +183,14 @@ function wireClientEvents(sess, client, gen) {
     if (sess.gen !== gen || sess.client !== client) return;
     try {
       fs.writeFileSync(path.join(sess.authDir, '.linked'), String(Date.now()));
-    } catch (_) {
-      // abaikan — marker bukan kritikal
+    } catch (err) {
+      // Marker ini SATU-SATUNYA penanda sesi ter-pair (lihat hasCreds). Kalau
+      // penulisannya gagal, sesi tidak akan di-start saat boot dan "Hubungkan"
+      // justru MENGHAPUS profil yang sebenarnya masih sah. Jadi jangan ditelan
+      // diam-diam — teriakkan di log dan tampilkan ke user.
+      console.error(`[wa:${sess.id}] GAGAL menulis marker .linked:`, err.message);
+      sess.lastError =
+        'Sesi terhubung, tapi penanda pairing gagal disimpan — sesi mungkin perlu di-scan ulang setelah restart.';
     }
   });
 
@@ -425,11 +434,9 @@ async function destroy(id) {
   sess.userInfo = null;
   sess.lastError = null;
   if (client) {
-    try {
-      await client.destroy();
-    } catch (_) {
-      // abaikan — client mungkin sudah mati
-    }
+    // client.destroy() pada puppeteer yang tersangkut tidak punya timeout sendiri —
+    // batasi supaya handler HTTP (rescan / pairing-code) tidak ikut menggantung.
+    await settleWithin(client.destroy(), DESTROY_TIMEOUT_MS);
   }
 }
 
@@ -522,17 +529,19 @@ async function rescan(id) {
   let settled = true;
   if (sess.starting) settled = await settleWithin(sess.starting, START_SETTLE_TIMEOUT_MS);
   if (!settled) {
-    // Timeout: start() lama belum selesai. Kalau `sess.starting` dibiarkan terisi,
-    // start() di bawah hanya mengembalikan promise BASI itu (guard di start) →
-    // tidak ada client baru, tidak ada QR — persis bug yang mau kita hindari.
-    // Promise lama tetap dibatalkan sendiri lewat guard `sess.gen`.
-    console.warn(`[wa:${id}] start sebelumnya belum selesai dalam ${START_SETTLE_TIMEOUT_MS}ms — dilepas.`);
-    sess.starting = null;
+    // Timeout: start() lama belum selesai, jadi kita TIDAK tahu apakah masih ada
+    // Chromium yang memegang profil ini. Melanjutkan sama saja merusak: menghapus
+    // profil bisa mengorupsinya, dan melaunch Client baru di user-data-dir yang
+    // sama akan gagal karena SingletonLock lalu terjerat loop reconnect.
+    // Berhenti dengan pesan jelas — user tinggal mencoba lagi beberapa detik lagi.
+    console.warn(`[wa:${id}] start sebelumnya belum selesai dalam ${START_SETTLE_TIMEOUT_MS}ms — rescan dibatalkan.`);
+    sess.stopReconnect = false;
+    throw new HttpError(
+      409,
+      'Sesi sedang dalam proses membuka koneksi — tunggu beberapa detik lalu coba lagi.'
+    );
   }
-  // Profil hanya dihapus bila kita YAKIN tidak ada Chromium lama yang masih
-  // memegangnya; rmSync saat browser hidup meninggalkan profil setengah tertulis
-  // + SingletonLock yang membuat launch berikutnya gagal.
-  if (settled && (wasAuthFailure || !hasCreds(id))) {
+  if (wasAuthFailure || !hasCreds(id)) {
     clearReconnect(sess);
     cleanupCreds(sess);
   }
@@ -591,13 +600,17 @@ async function requestPairingCode(id, phone) {
   let settled = true;
   if (sess.starting) settled = await settleWithin(sess.starting, START_SETTLE_TIMEOUT_MS);
   if (!settled) {
-    console.warn(`[wa:${id}] start sebelumnya belum selesai dalam ${START_SETTLE_TIMEOUT_MS}ms — dilepas.`);
-    sess.starting = null;
+    // Sama seperti rescan: state profil tidak pasti, jadi jangan dihapus DAN
+    // jangan dipakai ulang untuk launch baru.
+    console.warn(`[wa:${id}] start sebelumnya belum selesai dalam ${START_SETTLE_TIMEOUT_MS}ms — permintaan kode dibatalkan.`);
+    sess.stopReconnect = false;
+    throw new HttpError(
+      409,
+      'Sesi sedang dalam proses membuka koneksi — tunggu beberapa detik lalu coba lagi.'
+    );
   }
   clearReconnect(sess);
-  // Sisa pairing gagal tak layak di-resume — tapi jangan hapus profil kalau
-  // Chromium lama mungkin masih memegangnya (lihat catatan di rescan).
-  if (settled) cleanupCreds(sess);
+  cleanupCreds(sess); // sisa pairing gagal tak layak di-resume
   sess.pairingPhone = normalized; // penanda jalur kode — dibaca saat membuat Client
   sess.pairingCode = null;
   sess.pairingCodeExpiresAt = null;

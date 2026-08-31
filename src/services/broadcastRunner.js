@@ -107,12 +107,16 @@ async function processRecipient(broadcast, recipient, { applyDelay = true } = {}
   }
 }
 
-/** Jalankan sebuah broadcast sampai selesai/cancel. Dipakai queue (sequential) & parallel. */
+/**
+ * Jalankan sebuah broadcast sampai selesai/cancel. Dipakai queue (sequential) & parallel.
+ * Mengembalikan JUMLAH PESAN yang benar-benar terkirim di run ini — queue worker
+ * memakainya untuk memutuskan perlu-tidaknya jeda sebelum broadcast berikutnya.
+ */
 async function runBroadcast(broadcastId) {
   let broadcast = broadcastRepository.findById(broadcastId);
   if (!broadcast) {
     clearFlag(broadcastId); // jangan tinggalkan flag yatim di memori
-    return;
+    return 0;
   }
 
   // Broadcast legacy (pra-multi-session, session_id NULL) → kirim via sesi 'utama'.
@@ -122,7 +126,7 @@ async function runBroadcast(broadcastId) {
   // sempat jalan tidak boleh diproses, dan flag-nya dibersihkan di sini.
   if (isCancelled(broadcast.id) || broadcast.status === 'cancelled') {
     clearFlag(broadcast.id);
-    return;
+    return 0;
   }
 
   broadcastRepository.markRunning(broadcast.id);
@@ -143,7 +147,7 @@ async function runBroadcast(broadcastId) {
     await sleep(warmupMs);
     if (isCancelled(broadcast.id)) {
       clearFlag(broadcast.id);
-      return;
+      return 0;
     }
   }
 
@@ -165,8 +169,9 @@ async function runBroadcast(broadcastId) {
 
   clearFlag(broadcast.id);
 
+  const sentThisRun = sentCount - broadcast.sentCount; // dipakai queue untuk memberi jarak
   const fresh = broadcastRepository.findById(broadcast.id);
-  if (!fresh || fresh.status === 'cancelled') return;
+  if (!fresh || fresh.status === 'cancelled') return sentThisRun;
 
   if (fatal) {
     // Recipient yang memicu fatal sudah di-mark 'failed' oleh processRecipient
@@ -191,6 +196,7 @@ async function runBroadcast(broadcastId) {
   } else {
     broadcastRepository.markCompleted(broadcast.id, sentCount, failedCount);
   }
+  return sentThisRun;
 }
 
 /* ---------------- Queue worker (mode 'queue', FIFO, satu per satu) ---------------- */
@@ -210,8 +216,9 @@ async function runQueueLoop() {
       await waitForQueueSignal();
       continue;
     }
+    let sentThisRun = 0;
     try {
-      await runBroadcast(next.id);
+      sentThisRun = await runBroadcast(next.id);
     } catch (err) {
       console.error(`[runner] queue #${next.id} error:`, err);
       const b = broadcastRepository.findById(next.id);
@@ -223,7 +230,11 @@ async function runQueueLoop() {
     // terakhir supaya broadcast tidak menggantung di status 'running'; tanpa jeda
     // di sini, pesan terakhir broadcast ini dan pesan pertama broadcast berikutnya
     // keluar beruntun tanpa jarak sama sekali — melubangi plafon anti-ban.
-    if (workerRunning && broadcastRepository.findNextQueued()) {
+    //
+    // Hanya bila broadcast tadi BENAR-BENAR mengirim: kalau ia dibatalkan atau
+    // gagal total (0 terkirim), tidak ada apa pun yang perlu diberi jarak dan
+    // menahan antrian sampai MAX_DELAY_SECONDS hanya membekukan queue percuma.
+    if (sentThisRun > 0 && workerRunning && broadcastRepository.findNextQueued()) {
       await sleep(delayForBroadcast(next));
     }
   }

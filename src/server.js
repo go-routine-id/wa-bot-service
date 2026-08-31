@@ -30,9 +30,24 @@ async function main() {
 // (Client.js: pairWithPhoneNumber). Promise itu baru settle saat kode pertama tiba;
 // bila halaman/browser ditutup lebih dulu (rescan / hapus sesi), ia reject sebagai
 // unhandled rejection. Di Node >= 15 itu mematikan proses — seluruh sesi dan
-// broadcast yang sedang jalan ikut mati. Catat & lanjut hidup.
+// broadcast yang sedang jalan ikut mati.
+//
+// Yang ditoleransi HANYA rejection yang berasal dari library itu / puppeteer.
+// Rejection dari kode kita sendiri tetap dibiarkan mematikan proses (pm2 me-restart),
+// karena menelan semuanya akan menyembunyikan bug nyata — mis. tulisan DB yang gagal
+// di jalur tak ter-await bisa meninggalkan queue worker dalam keadaan tak konsisten
+// sambil hanya meninggalkan satu baris log.
+const TOLERATED_REJECTION_SOURCES = ['whatsapp-web.js', 'puppeteer'];
+
 process.on('unhandledRejection', (reason) => {
-  console.error('[proses] unhandled rejection (diabaikan, server tetap jalan):', reason);
+  const stack = (reason && (reason.stack || reason.message)) || String(reason);
+  const fromLibrary = TOLERATED_REJECTION_SOURCES.some((src) => String(stack).includes(src));
+  if (fromLibrary) {
+    console.error('[proses] unhandled rejection dari library WhatsApp (diabaikan):', stack);
+    return;
+  }
+  console.error('[proses] unhandled rejection TAK DIKENAL — proses dihentikan:', stack);
+  throw reason instanceof Error ? reason : new Error(String(stack));
 });
 
 // Graceful shutdown: destroy semua client whatsapp-web.js sebelum exit, supaya
