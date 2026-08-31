@@ -21,6 +21,15 @@ const config = {
   // device baru terdaftar stabil di server WhatsApp sebelum kirim massal — mitigasi
   // anti-ban (401 device_removed / logout di tengah kirim). 0 = nonaktif.
   warmupDelaySeconds: parseFloat(process.env.WARMUP_DELAY_SECONDS || '0'),
+  // Berapa kali satu pesan dicoba lagi bila GAGAL karena WhatsApp Web sedang
+  // memuat ulang halamannya. Hanya berlaku untuk error yang terbukti belum
+  // sempat dieksekusi (lihat utils/sendError.js), jadi tidak berisiko membuat
+  // pesan terkirim dua kali. 1 = tanpa percobaan ulang.
+  sendMaxAttempts: Math.max(1, parseInt(process.env.SEND_MAX_ATTEMPTS || '3', 10)),
+  // Jeda sebelum percobaan ulang (detik). Suntik-ulang whatsapp-web.js setelah
+  // halaman berpindah butuh waktu; mencoba lagi seketika hanya menabrak jendela
+  // yang sama.
+  sendRetryDelaySeconds: parseFloat(process.env.SEND_RETRY_DELAY_SECONDS || '3'),
   maxUploadSize: parseInt(process.env.MAX_UPLOAD_SIZE || String(5 * 1024 * 1024), 10),
   // API key opsional untuk /api. Kosong = nonaktif (perilaku lama, cocok untuk
   // pemakaian lokal). Isi bila port bisa dijangkau pihak lain.

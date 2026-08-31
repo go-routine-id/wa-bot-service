@@ -2,6 +2,7 @@
 
 const { sleep } = require('../utils/sleep');
 const { toChatId } = require('../utils/phone');
+const { classifySendError } = require('../utils/sendError');
 const config = require('../../config');
 const whatsappService = require('./whatsappService');
 const broadcastRepository = require('../repositories/broadcastRepository');
@@ -31,6 +32,14 @@ function delayForRate(ratePerMinute) {
 
 /** Batas aman setTimeout (32-bit signed). Di atas ini Node meng-clamp jadi 1 ms. */
 const MAX_TIMEOUT_MS = 2147483647;
+
+/**
+ * Batas tunggu koneksi pulih SEBELUM percobaan ulang. Lebih pendek dari tunggu
+ * awal (2 menit): di sini sesi tadi sudah terhubung dan hanya sedang menyuntik
+ * ulang setelah halaman berpindah — kalau lebih lama dari ini, masalahnya bukan
+ * lagi sekadar muat ulang, dan menahan seluruh antrian tidak ada gunanya.
+ */
+const RETRY_CONNECT_TIMEOUT_MS = 30 * 1000;
 
 /**
  * Jeda antar pesan (ms) untuk sebuah broadcast. Bila delay_seconds tersimpan
@@ -87,18 +96,57 @@ async function processRecipient(broadcast, recipient, { applyDelay = true } = {}
 
   recipientRepository.updateStatus(recipient.id, { status: 'sending' });
   try {
-    await whatsappService.sendMessage(broadcast.sessionId, toChatId(recipient.recipientNumber), {
-      text: broadcast.messageText,
-      mediaPath: broadcast.mediaPath,
-    });
-    recipientRepository.updateStatus(recipient.id, {
-      status: 'sent',
-      sentAt: new Date().toISOString(),
-    });
-    return 'sent';
-  } catch (err) {
-    recipientRepository.updateStatus(recipient.id, { status: 'failed', error: err.message });
-    return 'failed';
+    // WhatsApp Web kadang memuat ulang halamannya sendiri, dan pengiriman yang
+    // jatuh tepat di jendela itu gagal karena frame-nya sudah dilepas. Kegagalan
+    // seperti itu bukan soal nomornya, dan terbukti belum sempat dieksekusi —
+    // jadi dicoba lagi, bukan langsung ditandai gagal permanen.
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        await whatsappService.sendMessage(broadcast.sessionId, toChatId(recipient.recipientNumber), {
+          text: broadcast.messageText,
+          mediaPath: broadcast.mediaPath,
+        });
+        recipientRepository.updateStatus(recipient.id, {
+          status: 'sent',
+          sentAt: new Date().toISOString(),
+        });
+        return 'sent';
+      } catch (err) {
+        const { retryable, message } = classifySendError(err);
+        const lastAttempt = attempt >= config.sendMaxAttempts;
+
+        if (!retryable || lastAttempt) {
+          if (retryable) {
+            console.error(
+              `[runner] #${broadcast.id} ${recipient.recipientNumber}: menyerah setelah ${attempt} percobaan — ${message}`
+            );
+          }
+          recipientRepository.updateStatus(recipient.id, { status: 'failed', error: message });
+          return 'failed';
+        }
+
+        console.warn(
+          `[runner] #${broadcast.id} ${recipient.recipientNumber}: ${message}, coba lagi (${attempt}/${config.sendMaxAttempts})`
+        );
+        await sleep(Math.round(config.sendRetryDelaySeconds * 1000));
+
+        // Pembatalan diperiksa SETELAH jeda: broadcast bisa dibatalkan selagi
+        // menunggu, dan meneruskan percobaan berikutnya berarti mengirim pesan
+        // yang sudah diminta berhenti.
+        if (isCancelled(broadcast.id)) return 'stopped';
+
+        // Halaman baru saja dimuat ulang; suntikan whatsapp-web.js perlu waktu
+        // sampai siap. Mencoba tanpa menunggu hanya menabrak jendela yang sama.
+        if (!(await waitForConnection(broadcast, RETRY_CONNECT_TIMEOUT_MS))) {
+          if (isCancelled(broadcast.id)) return 'stopped';
+          recipientRepository.updateStatus(recipient.id, {
+            status: 'failed',
+            error: 'WhatsApp tidak terhubung kembali setelah memuat ulang',
+          });
+          return 'failed';
+        }
+      }
+    }
   } finally {
     // Delay diterapkan setelah tiap percobaan (sukses maupun gagal), KECUALI
     // setelah recipient terakhir — menunggu di sana hanya menahan broadcast di

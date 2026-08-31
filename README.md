@@ -130,6 +130,8 @@ Media di-serve di `/uploads/...` (mis. `http://localhost:3000/uploads/broadcasts
 | `MAX_DELAY_SECONDS` | `3600` | Batas atas jeda per pesan (detik) |
 | `WARMUP_DELAY_SECONDS` | `0` | Jeda pemanasan (detik) sebelum pesan pertama broadcast — mitigasi anti-ban untuk device baru |
 | `MAX_UPLOAD_SIZE` | `5242880` | Maks. ukuran gambar (5 MB) |
+| `SEND_MAX_ATTEMPTS` | `3` | Percobaan kirim per nomor saat WhatsApp Web memuat ulang halamannya. `1` = tanpa coba ulang |
+| `SEND_RETRY_DELAY_SECONDS` | `3` | Jeda sebelum percobaan ulang |
 | `CORS_ORIGINS` | *(kosong)* | Origin web yang diizinkan (pisah koma) |
 | `API_KEY` | *(kosong)* | API key untuk `/api`. Kosong = nonaktif. Klien mengirimnya lewat header `X-API-Key` (frontend: `localStorage.setItem('WA_API_KEY', '…')`) |
 
@@ -160,6 +162,23 @@ uploads/           # media broadcast (dari env UPLOAD_DIR)
 | Broadcast semua gagal | Cek format nomor (`628...`, 8–15 digit), pastikan sesi pengirim terhubung, dan sesi masih ada (belum dihapus) |
 | Muncul `auth_failure` | Sesi di-logout/invalid dari WhatsApp — klik rescan (QR baru, scan ulang) |
 | Nomor diblokir / ditegur WhatsApp | Kurangi rate (20/menit), pakai mode `queue`, jangan broadcast ke nomor tak dikenal |
+| Recipient gagal: "WhatsApp Web sedang memuat ulang…" | Sudah dicoba ulang otomatis sampai `SEND_MAX_ATTEMPTS` dan tetap gagal — jalankan **Kirim ulang yang gagal** |
+| Recipient gagal: "…pesan mungkin sudah terkirim" | Koneksi putus DI TENGAH pengiriman, jadi statusnya tidak pasti. Cek dulu ke penerimanya sebelum mengirim ulang |
+
+## Kenapa pengiriman bisa gagal sesaat
+
+whatsapp-web.js mengendalikan WhatsApp Web di dalam Chromium. WhatsApp Web
+**memuat ulang halamannya sendiri** dari waktu ke waktu (sinkronisasi sesi,
+pembaruan versi, koneksi pulih), dan library menyuntik ulang skripnya lewat
+handler `framenavigated`. Pengiriman yang jatuh tepat di jendela itu gagal
+dengan error Puppeteer — bukan karena nomornya salah dan bukan tanda ter-ban.
+
+Kegagalan seperti itu dibedakan jadi dua:
+
+| Jenis | Contoh error asli | Perlakuan |
+|---|---|---|
+| Terbukti belum dieksekusi | `Attempted to use detached Frame '…'`, `Execution context was destroyed` | **Dicoba ulang otomatis** — Puppeteer melemparnya sebelum kode masuk ke halaman, jadi pesan tidak mungkin terkirim dua kali |
+| Status tidak pasti | `Target closed`, `Session closed` | **Tidak** diulang otomatis. Bisa terjadi di tengah panggilan, jadi pesannya mungkin sudah masuk; mengulang berisiko penerima dapat dua pesan sekaligus menambah risiko ban |
 
 ## Catatan
 
