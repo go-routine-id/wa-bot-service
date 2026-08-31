@@ -17,6 +17,14 @@ function isInsideUploads(relPath) {
  * Lapis kedua setelah allowlist mimetype: mimetype dikirim klien dan bisa
  * dipalsukan, sedangkan byte awal berkas tidak.
  */
+/** Tipe hasil deteksi → ekstensi yang dipakai menyimpan berkas. */
+const TYPE_EXT = { png: '.png', jpeg: '.jpg', gif: '.gif', webp: '.webp' };
+
+// Ukuran minimum yang masuk akal untuk sebuah gambar. Signature saja tidak cukup:
+// berkas 3 byte "FF D8 FF" lolos cek JPEG padahal jelas terpotong, dan kerusakannya
+// baru ketahuan saat MessageMedia mengirimkannya ke WhatsApp.
+const MIN_IMAGE_BYTES = 64;
+
 function detectImageType(buf) {
   if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
     return 'png';
@@ -43,25 +51,60 @@ const mediaService = {
     // gambar. Berkas palsu dibuang di sini supaya tidak pernah mendarat di folder
     // yang disajikan publik lewat /uploads.
     const tmpAbs = file.path;
-    const fd = fs.openSync(tmpAbs, 'r');
-    const head = Buffer.alloc(12);
-    try {
-      fs.readSync(fd, head, 0, 12, 0);
-    } finally {
-      fs.closeSync(fd);
-    }
-    if (!detectImageType(head)) {
+
+    const dropTmp = () => {
       try {
         fs.unlinkSync(tmpAbs);
       } catch (_) {
         // abaikan — yang penting berkas tidak dipindahkan ke folder publik
       }
+    };
+
+    // Baca byte awal. bytesRead WAJIB dipakai: Buffer.alloc(12) selalu berukuran
+    // 12 (terisi nol), jadi tanpa ini berkas 3 byte pun lolos semua cek panjang
+    // di detectImageType dan gambar terpotong baru ketahuan saat dikirim.
+    let head;
+    try {
+      const fd = fs.openSync(tmpAbs, 'r');
+      try {
+        const buf = Buffer.alloc(12);
+        const bytesRead = fs.readSync(fd, buf, 0, 12, 0);
+        head = buf.subarray(0, bytesRead);
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch (_) {
+      // Berkas sementara hilang/tak terbaca (disk penuh, cleanup eksternal, EACCES).
+      // Balas 400 yang jelas, bukan 500 opaque.
+      dropTmp();
+      const err = new Error('Berkas upload tidak terbaca — coba unggah ulang');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const { size } = fs.statSync(tmpAbs);
+    if (size < MIN_IMAGE_BYTES) {
+      dropTmp();
+      const err = new Error('Berkas gambar terlalu kecil / rusak');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const detected = detectImageType(head);
+    if (!detected) {
+      dropTmp();
       const err = new Error('Berkas bukan gambar yang valid (PNG, JPG, GIF, atau WebP)');
       err.statusCode = 400;
       throw err;
     }
 
-    const destRel = path.join('templates', file.filename);
+    // Ekstensi mengikuti ISI berkas, bukan mimetype kiriman klien. Kalau keduanya
+    // berbeda (mis. byte GIF ber-Content-Type image/png), menyimpan sebagai .png
+    // membuat express.static mengirim Content-Type salah — dan dengan nosniff
+    // browser menolak mengoreksinya sehingga gambar gagal tampil. MessageMedia
+    // juga menurunkan mimetype dari ekstensi, jadi WhatsApp ikut menerima label salah.
+    const finalName = path.basename(file.filename, path.extname(file.filename)) + TYPE_EXT[detected];
+    const destRel = path.join('templates', finalName);
     const destAbs = path.join(uploadRoot, destRel);
     fs.mkdirSync(path.dirname(destAbs), { recursive: true });
     fs.renameSync(file.path, destAbs);

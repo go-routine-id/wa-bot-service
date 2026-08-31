@@ -6,7 +6,11 @@ const fs = require('fs');
 const crypto = require('crypto');
 const config = require('../../config');
 
-const tmpDir = path.join(config.uploadDir, 'tmp');
+// DI LUAR uploadDir: express.static menyajikan seluruh isi uploadDir, sedangkan
+// multer menulis berkas mentah ke sini SEBELUM isinya divalidasi. Kalau tmp berada
+// di dalamnya, berkas yang belum diperiksa sempat bisa diunduh siapa pun lewat
+// /uploads/tmp/<nama>, dan menetap permanen bila penghapusannya gagal.
+const tmpDir = path.join(config.root, '.upload-tmp');
 fs.mkdirSync(tmpDir, { recursive: true });
 
 /**
