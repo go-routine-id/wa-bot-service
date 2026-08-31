@@ -23,7 +23,11 @@ const TYPE_EXT = { png: '.png', jpeg: '.jpg', gif: '.gif', webp: '.webp' };
 // Ukuran minimum yang masuk akal untuk sebuah gambar. Signature saja tidak cukup:
 // berkas 3 byte "FF D8 FF" lolos cek JPEG padahal jelas terpotong, dan kerusakannya
 // baru ketahuan saat MessageMedia mengirimkannya ke WhatsApp.
-const MIN_IMAGE_BYTES = 64;
+//
+// Ambangnya sengaja rendah, dekat ukuran minimum format yang sah: GIF 1x1 sekitar
+// 35 byte dan WebP 1x1 sekitar 30 byte — keduanya gambar sungguhan (spacer, ikon
+// kecil) yang tidak boleh ikut tertolak.
+const MIN_IMAGE_BYTES = 28;
 
 function detectImageType(buf) {
   if (buf.length >= 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
@@ -43,7 +47,8 @@ function detectImageType(buf) {
 
 const mediaService = {
   /**
-   * File sudah ditulis multer ke uploads/tmp/. Pindahkan ke uploads/templates/
+   * File sudah ditulis multer ke uploads/tmp/ (tidak tersaji publik — app.js hanya
+   * me-mount templates/ dan broadcasts/). Divalidasi isinya lalu dipindah ke uploads/templates/
    * dan kembalikan metadata untuk disimpan di DB / dibalas ke frontend.
    */
   saveUploaded(file) {
@@ -82,8 +87,10 @@ const mediaService = {
       throw err;
     }
 
-    const { size } = fs.statSync(tmpAbs);
-    if (size < MIN_IMAGE_BYTES) {
+    // file.size disediakan multer — hindari statSync di sini karena ia berada di
+    // luar try/catch di atas, sehingga tmp yang keburu hilang akan melempar ENOENT
+    // dan berubah jadi 500 opaque, persis yang ingin dihindari.
+    if ((file.size ?? 0) < MIN_IMAGE_BYTES) {
       dropTmp();
       const err = new Error('Berkas gambar terlalu kecil / rusak');
       err.statusCode = 400;
@@ -107,7 +114,19 @@ const mediaService = {
     const destRel = path.join('templates', finalName);
     const destAbs = path.join(uploadRoot, destRel);
     fs.mkdirSync(path.dirname(destAbs), { recursive: true });
-    fs.renameSync(file.path, destAbs);
+    try {
+      fs.renameSync(tmpAbs, destAbs);
+    } catch (err) {
+      if (err.code === 'EXDEV') {
+        // Beda filesystem (mis. uploads/ dipasang sebagai volume terpisah):
+        // rename tidak bisa, salin lalu hapus sumbernya.
+        fs.copyFileSync(tmpAbs, destAbs);
+        dropTmp();
+      } else {
+        dropTmp(); // jangan tinggalkan berkas yatim di folder tmp
+        throw err;
+      }
+    }
     return {
       mediaPath: destRel,
       mediaUrl: `/uploads/${destRel}`,

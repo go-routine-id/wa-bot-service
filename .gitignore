@@ -13,4 +13,3 @@ db/*.db-shm
 npm-debug.log*
 
 .claude/
-.upload-tmp/

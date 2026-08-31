@@ -1,6 +1,7 @@
 'use strict';
 
 const express = require('express');
+const path = require('path');
 const config = require('../config');
 const apiRoutes = require('./routes');
 const { corsMiddleware } = require('./middleware/cors');
@@ -12,16 +13,16 @@ app.use(express.json());
 // CORS configurable (env CORS_ORIGINS); kosong = same-origin. Dipasang sebelum route
 // supaya preflight OPTIONS lintas-origin ditangani (204) sebelum masuk routing.
 app.use(corsMiddleware);
-// nosniff: lapis terakhir supaya browser tidak menebak-nebak tipe berkas yang
-// disajikan dari folder upload (mis. menjalankan HTML dari berkas ber-ekstensi gambar).
-app.use(
-  '/uploads',
-  (_req, res, next) => {
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    next();
-  },
-  express.static(config.uploadDir)
-);
+// Hanya subfolder publik yang di-mount — BUKAN seluruh uploadDir. uploads/tmp/
+// berisi berkas mentah yang belum divalidasi isinya; kalau ikut tersaji, siapa pun
+// bisa mengunduhnya di sela antara multer menulis dan pemeriksaan magic bytes.
+// nosniff: lapis terakhir agar browser tidak menebak-nebak tipe berkas.
+const nosniff = (_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  next();
+};
+app.use('/uploads/templates', nosniff, express.static(path.join(config.uploadDir, 'templates')));
+app.use('/uploads/broadcasts', nosniff, express.static(path.join(config.uploadDir, 'broadcasts')));
 // API di-polling frontend tiap 2.5 detik → larang caching kondisional: 304
 // ber-body kosong memecahkan klien yang tidak menangani cache transparan
 // (api.js membaca res.ok + res.json — 304 bukan 2xx → error "HTTP 304" palsu).

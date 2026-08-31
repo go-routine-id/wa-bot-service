@@ -6,11 +6,12 @@ const fs = require('fs');
 const crypto = require('crypto');
 const config = require('../../config');
 
-// DI LUAR uploadDir: express.static menyajikan seluruh isi uploadDir, sedangkan
-// multer menulis berkas mentah ke sini SEBELUM isinya divalidasi. Kalau tmp berada
-// di dalamnya, berkas yang belum diperiksa sempat bisa diunduh siapa pun lewat
-// /uploads/tmp/<nama>, dan menetap permanen bila penghapusannya gagal.
-const tmpDir = path.join(config.root, '.upload-tmp');
+// Tetap DI DALAM uploadDir supaya rename ke uploads/templates selalu berada di
+// filesystem yang sama (uploads/ lazim dipasang sebagai volume terpisah; rename
+// lintas-device gagal EXDEV). Berkas mentah di sini tidak pernah tersaji publik
+// karena app.js hanya me-mount subfolder templates/ dan broadcasts/, bukan
+// seluruh uploadDir.
+const tmpDir = path.join(config.uploadDir, 'tmp');
 fs.mkdirSync(tmpDir, { recursive: true });
 
 /**
