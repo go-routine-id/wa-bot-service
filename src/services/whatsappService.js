@@ -347,8 +347,23 @@ async function start(id) {
 
     try {
       await client.initialize();
+      // Gen bisa berubah SELAMA initialize (rescan/hapus sesi). Tanpa cek ini,
+      // browser yang barusan sukses dibuka tidak dimiliki siapa pun: destroy()
+      // sudah men-null-kan sess.client sebelum kita sampai sini, jadi tak ada
+      // lagi yang akan menutupnya — Chromium menggantung sambil memegang lock
+      // profil sehingga launch berikutnya bisa gagal.
+      if (sess.gen !== gen) {
+        await client.destroy().catch(() => {});
+        return;
+      }
     } catch (err) {
-      if (sess.gen !== gen) return; // destroy/rescan saat initialize berlangsung
+      if (sess.gen !== gen) {
+        // Sama seperti di atas: lepas client sebelum keluar. Umumnya destroy()
+        // sudah menutupnya (karena itu initialize reject), tapi pada race sempit
+        // di mana destroy() belum sempat melihat sess.client, client ini masih hidup.
+        await client.destroy().catch(() => {});
+        return;
+      }
       console.error(`[wa:${sess.id}] initialize gagal:`, err.message);
       // Putus referensi dulu, lalu destroy client agar Chromium tak bocor.
       sess.client = null;
