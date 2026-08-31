@@ -12,7 +12,16 @@ app.use(express.json());
 // CORS configurable (env CORS_ORIGINS); kosong = same-origin. Dipasang sebelum route
 // supaya preflight OPTIONS lintas-origin ditangani (204) sebelum masuk routing.
 app.use(corsMiddleware);
-app.use('/uploads', express.static(config.uploadDir));
+// nosniff: lapis terakhir supaya browser tidak menebak-nebak tipe berkas yang
+// disajikan dari folder upload (mis. menjalankan HTML dari berkas ber-ekstensi gambar).
+app.use(
+  '/uploads',
+  (_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    next();
+  },
+  express.static(config.uploadDir)
+);
 // API di-polling frontend tiap 2.5 detik → larang caching kondisional: 304
 // ber-body kosong memecahkan klien yang tidak menangani cache transparan
 // (api.js membaca res.ok + res.json — 304 bukan 2xx → error "HTTP 304" palsu).

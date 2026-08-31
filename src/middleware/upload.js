@@ -9,10 +9,27 @@ const config = require('../../config');
 const tmpDir = path.join(config.uploadDir, 'tmp');
 fs.mkdirSync(tmpDir, { recursive: true });
 
+/**
+ * Tipe gambar yang diizinkan → ekstensi yang DIPAKSAKAN.
+ *
+ * Ekstensi TIDAK boleh diambil dari file.originalname: mimetype dikirim klien
+ * (bisa dipalsukan), sehingga `evil.html` ber-Content-Type `image/png` dulu
+ * tersimpan sebagai .html lalu disajikan express.static sebagai text/html —
+ * script-nya berjalan di origin API. Dengan memaksa ekstensi dari daftar ini,
+ * berkas apa pun paling banter tersaji sebagai gambar rusak, bukan HTML.
+ */
+const ALLOWED_IMAGE_TYPES = {
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+};
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, tmpDir),
   filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase().slice(0, 10);
+    const ext = ALLOWED_IMAGE_TYPES[file.mimetype.toLowerCase()] || '.bin';
     cb(null, `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${ext}`);
   },
 });
@@ -21,8 +38,14 @@ const upload = multer({
   storage,
   limits: { fileSize: config.maxUploadSize, files: 1 },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) return cb(null, true);
-    cb(Object.assign(new Error('Hanya file gambar yang diizinkan (image/*)'), { statusCode: 400 }));
+    // Allowlist eksplisit, bukan sekadar startsWith('image/') — 'image/svg+xml'
+    // pun sebenarnya bisa memuat script bila tersaji langsung.
+    if (ALLOWED_IMAGE_TYPES[file.mimetype.toLowerCase()]) return cb(null, true);
+    cb(
+      Object.assign(new Error('Hanya PNG, JPG, GIF, atau WebP yang diizinkan'), {
+        statusCode: 400,
+      })
+    );
   },
 });
 
@@ -41,4 +64,4 @@ function uploadSingleImage(fieldName) {
   };
 }
 
-module.exports = { upload, uploadSingleImage };
+module.exports = { upload, uploadSingleImage, ALLOWED_IMAGE_TYPES };

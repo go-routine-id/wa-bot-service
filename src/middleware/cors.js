@@ -15,7 +15,10 @@ function corsMiddleware(req, res, next) {
     res.setHeader('Access-Control-Allow-Origin', origin);
     res.setHeader('Vary', 'Origin');
     res.setHeader('Access-Control-Allow-Credentials', 'true');
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+    // PATCH WAJIB ada: rename sesi (PATCH /api/sessions/:id) dipanggil frontend
+    // lintas-origin. Tanpa ini preflight menolak dan tombol Rename mati total.
+    // Daftar ini harus mencakup SEMUA metode yang dipakai routes/.
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
     if (req.method === 'OPTIONS') {
