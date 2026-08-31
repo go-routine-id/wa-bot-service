@@ -16,6 +16,9 @@ const RECONNECT_DELAYS = [3000, 5000, 10000, 20000, 30000]; // ms
 // menit). Dipakai juga sebagai masa berlaku yang ditampilkan di UI.
 const PAIRING_CODE_INTERVAL_MS = 3 * 60 * 1000;
 
+// Batas menunggu start() yang masih in-flight sebelum memulai yang baru.
+const START_SETTLE_TIMEOUT_MS = 20000;
+
 /**
  * Registry sesi runtime. Sumber kebenaran keberadaan sesi = tabel `sessions`;
  * Map ini hanya state client/status/QR per sesi.
@@ -275,6 +278,19 @@ function wireClientEvents(sess, client, gen) {
 }
 
 /** Hapus profil LocalAuth sesi (creds basi) — dipakai auth_failure & rescan/logout. */
+/**
+ * Tunggu sebuah promise settle, tapi maksimal `ms`. Dipakai untuk menunggu
+ * start() yang masih in-flight: normalnya ia langsung reject begitu browser
+ * di-destroy, tapi kita tidak mau request HTTP menggantung selamanya kalau
+ * puppeteer tersangkut (authTimeoutMs default library = 0 alias tanpa batas).
+ */
+function settleWithin(promise, ms) {
+  return Promise.race([
+    promise.catch(() => {}),
+    new Promise((resolve) => setTimeout(resolve, ms)),
+  ]);
+}
+
 function cleanupCreds(sess) {
   try {
     fs.rmSync(sess.authDir, { recursive: true, force: true });
@@ -475,13 +491,19 @@ async function rescan(id) {
   // promise LAMA (guard `if (sess.starting)`) yang lalu batal sendiri karena gen
   // sudah berubah → tidak ada client baru, tidak ada QR, dan tidak ada reconnect:
   // sesi diam di 'uninitialized' padahal API sudah membalas ok.
-  if (sess.starting) await sess.starting.catch(() => {});
+  if (sess.starting) await settleWithin(sess.starting, START_SETTLE_TIMEOUT_MS);
   if (wasAuthFailure || !hasCreds(id)) {
     clearReconnect(sess);
     cleanupCreds(sess);
   }
   sess.stopReconnect = false;
-  await start(id);
+  // Fire-and-forget, sama seperti addSession: client.initialize() butuh 30–40
+  // detik (launch Chromium + load web.whatsapp.com + inject). Menunggunya di sini
+  // membuat request HTTP menggantung sampai lewat batas timeout klien, padahal
+  // status 'qr'/'connected' toh diambil frontend lewat polling.
+  start(id).catch((err) => {
+    console.error(`[wa:${id}] start gagal setelah rescan:`, err.message);
+  });
 }
 
 /**
@@ -526,14 +548,18 @@ async function requestPairingCode(id, phone) {
   }
   sess.stopReconnect = true;
   await destroy(id);
-  if (sess.starting) await sess.starting.catch(() => {});
+  if (sess.starting) await settleWithin(sess.starting, START_SETTLE_TIMEOUT_MS);
   clearReconnect(sess);
   cleanupCreds(sess); // sisa pairing gagal tak layak di-resume
   sess.pairingPhone = normalized; // penanda jalur kode — dibaca saat membuat Client
   sess.pairingCode = null;
   sess.pairingCodeExpiresAt = null;
   sess.stopReconnect = false;
-  await start(id);
+  // Fire-and-forget (lihat catatan di rescan): kode pairing muncul async lewat
+  // event 'code' dan diambil frontend dari polling status.
+  start(id).catch((err) => {
+    console.error(`[wa:${id}] start gagal setelah request kode pairing:`, err.message);
+  });
   return getStatus(id);
 }
 
