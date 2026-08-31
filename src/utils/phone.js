@@ -43,7 +43,10 @@ function parseTargets(raw) {
       // Token tanpa digit sama sekali disimpan apa adanya supaya user mengenali
       // entri mana yang salah ketik — tapi dipotong agar teks sampah panjang
       // tidak masuk utuh ke DB dan tabel history.
-      invalid.push(number || part.slice(0, MAX_INVALID_LABEL));
+      // Potong SETELAH memilih nilainya: token panjang yang mengandung digit
+      // menghasilkan `number` yang panjang pula, dan versi sebelumnya hanya
+      // memotong cabang `part` sehingga teks sampah tetap masuk utuh ke DB.
+      invalid.push((number || part).slice(0, MAX_INVALID_LABEL));
       continue;
     }
     if (seen.has(number)) continue; // dedupe

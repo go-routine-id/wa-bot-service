@@ -219,6 +219,13 @@ async function runQueueLoop() {
         broadcastRepository.markFailed(next.id, err.message, b.sentCount, b.failedCount);
       }
     }
+    // Jeda ANTAR broadcast. processRecipient sengaja melewati jeda setelah pesan
+    // terakhir supaya broadcast tidak menggantung di status 'running'; tanpa jeda
+    // di sini, pesan terakhir broadcast ini dan pesan pertama broadcast berikutnya
+    // keluar beruntun tanpa jarak sama sekali — melubangi plafon anti-ban.
+    if (workerRunning && broadcastRepository.findNextQueued()) {
+      await sleep(delayForBroadcast(next));
+    }
   }
 }
 

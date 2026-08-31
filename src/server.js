@@ -26,6 +26,15 @@ async function main() {
   });
 }
 
+// whatsapp-web.js memanggil requestPairingCode() TANPA await dan TANPA .catch()
+// (Client.js: pairWithPhoneNumber). Promise itu baru settle saat kode pertama tiba;
+// bila halaman/browser ditutup lebih dulu (rescan / hapus sesi), ia reject sebagai
+// unhandled rejection. Di Node >= 15 itu mematikan proses — seluruh sesi dan
+// broadcast yang sedang jalan ikut mati. Catat & lanjut hidup.
+process.on('unhandledRejection', (reason) => {
+  console.error('[proses] unhandled rejection (diabaikan, server tetap jalan):', reason);
+});
+
 // Graceful shutdown: destroy semua client whatsapp-web.js sebelum exit, supaya
 // tidak ada proses Chromium menggantung / sesi setengah terbuka saat restart.
 let shuttingDown = false;

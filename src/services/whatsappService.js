@@ -43,22 +43,17 @@ function ensureAuthDir() {
  *
  * Tanpa marker ini, sesi valid yang baru saja di-restart bisa salah dikira
  * "belum ter-pair" → dipaksa scan QR ulang setiap boot.
+ *
+ * JANGAN menambah fallback "ada folder Default/IndexedDB/https_web.whatsapp.com":
+ * folder itu dibuat Chromium begitu web.whatsapp.com dimuat — yaitu untuk
+ * MENGGAMBAR QR — jadi sesi yang belum pernah ter-pair pun memilikinya. Fallback
+ * seperti itu membuat hasCreds selalu true dan merusak banyak hal sekaligus:
+ * requestPairingCode ditolak 409, startAll otomatis membuka QR saat boot, rescan
+ * berhenti membersihkan profil rusak, dan sesi tak ter-pair masuk loop reconnect.
+ * Pembeda yang sah hanya sesuatu yang ditulis SETELAH pairing sukses.
  */
 function hasCreds(id) {
-  const dir = path.join(config.authDir, `session-${id}`);
-  if (fs.existsSync(path.join(dir, '.linked'))) return true;
-  // Fallback bila marker hilang (mis. proses mati setelah pairing sukses tapi
-  // sebelum event 'authenticated' sempat menulis marker): deteksi sesi WhatsApp
-  // Web yang benar-benar tersimpan di profil Chromium. Tanpa ini, profil yang
-  // masih sah dianggap belum ter-pair dan akan DIHAPUS oleh rescan.
-  try {
-    const idbDir = path.join(dir, 'Default', 'IndexedDB');
-    return fs
-      .readdirSync(idbDir)
-      .some((entry) => entry.startsWith('https_web.whatsapp.com'));
-  } catch (_) {
-    return false; // folder tak ada / tak terbaca → anggap belum ter-pair
-  }
+  return fs.existsSync(path.join(config.authDir, `session-${id}`, '.linked'));
 }
 
 function sessionExists(id) {
@@ -277,20 +272,27 @@ function wireClientEvents(sess, client, gen) {
   });
 }
 
-/** Hapus profil LocalAuth sesi (creds basi) — dipakai auth_failure & rescan/logout. */
 /**
- * Tunggu sebuah promise settle, tapi maksimal `ms`. Dipakai untuk menunggu
- * start() yang masih in-flight: normalnya ia langsung reject begitu browser
- * di-destroy, tapi kita tidak mau request HTTP menggantung selamanya kalau
- * puppeteer tersangkut (authTimeoutMs default library = 0 alias tanpa batas).
+ * Tunggu sebuah promise settle, maksimal `ms`. Kembalikan true bila benar-benar
+ * settle, false bila keburu timeout — pemanggil WAJIB membedakannya (lihat rescan).
+ *
+ * Dipakai untuk menunggu start() yang masih in-flight: normalnya ia langsung
+ * reject begitu browser di-destroy, tapi kita tidak mau request HTTP menggantung
+ * selamanya kalau puppeteer tersangkut (authTimeoutMs default library = 0).
  */
 function settleWithin(promise, ms) {
-  return Promise.race([
-    promise.catch(() => {}),
-    new Promise((resolve) => setTimeout(resolve, ms)),
-  ]);
+  let timer = null;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  return Promise.race([promise.then(() => true, () => true), timeout]).finally(() => {
+    // Tanpa clearTimeout, timer 20 detik menahan event loop tetap hidup dan
+    // memperlambat exit bersih saat SIGTERM/destroyAll.
+    if (timer) clearTimeout(timer);
+  });
 }
 
+/** Hapus profil LocalAuth sesi (kredensial basi) — dipakai auth_failure & rescan/logout. */
 function cleanupCreds(sess) {
   try {
     fs.rmSync(sess.authDir, { recursive: true, force: true });
@@ -365,9 +367,20 @@ async function start(id) {
         sess.qrDataUrl = null;
         sess.pairingCode = null;
         sess.pairingCodeExpiresAt = null;
-        sess.status = 'disconnected';
-        sess.lastError = err.message || 'Gagal inisialisasi WhatsApp Web';
-        scheduleReconnect(sess);
+        if (sess.pairingPhone) {
+          // Mode kode pairing TIDAK boleh auto-reconnect: tiap percobaan ulang
+          // membangun Client dalam mode pairing lagi dan menembakkan permintaan
+          // kode baru (showNotification: true) ke nomor asli user — berulang tanpa
+          // henti. Kembalikan ke jalur manual.
+          sess.pairingPhone = null;
+          sess.status = 'uninitialized';
+          sess.lastError =
+            'Gagal meminta kode pairing — coba lagi, atau pakai QR. ' + (err.message || '');
+        } else {
+          sess.status = 'disconnected';
+          sess.lastError = err.message || 'Gagal inisialisasi WhatsApp Web';
+          scheduleReconnect(sess);
+        }
       }
     }
   })().finally(() => {
@@ -491,8 +504,20 @@ async function rescan(id) {
   // promise LAMA (guard `if (sess.starting)`) yang lalu batal sendiri karena gen
   // sudah berubah → tidak ada client baru, tidak ada QR, dan tidak ada reconnect:
   // sesi diam di 'uninitialized' padahal API sudah membalas ok.
-  if (sess.starting) await settleWithin(sess.starting, START_SETTLE_TIMEOUT_MS);
-  if (wasAuthFailure || !hasCreds(id)) {
+  let settled = true;
+  if (sess.starting) settled = await settleWithin(sess.starting, START_SETTLE_TIMEOUT_MS);
+  if (!settled) {
+    // Timeout: start() lama belum selesai. Kalau `sess.starting` dibiarkan terisi,
+    // start() di bawah hanya mengembalikan promise BASI itu (guard di start) →
+    // tidak ada client baru, tidak ada QR — persis bug yang mau kita hindari.
+    // Promise lama tetap dibatalkan sendiri lewat guard `sess.gen`.
+    console.warn(`[wa:${id}] start sebelumnya belum selesai dalam ${START_SETTLE_TIMEOUT_MS}ms — dilepas.`);
+    sess.starting = null;
+  }
+  // Profil hanya dihapus bila kita YAKIN tidak ada Chromium lama yang masih
+  // memegangnya; rmSync saat browser hidup meninggalkan profil setengah tertulis
+  // + SingletonLock yang membuat launch berikutnya gagal.
+  if (settled && (wasAuthFailure || !hasCreds(id))) {
     clearReconnect(sess);
     cleanupCreds(sess);
   }
@@ -548,9 +573,16 @@ async function requestPairingCode(id, phone) {
   }
   sess.stopReconnect = true;
   await destroy(id);
-  if (sess.starting) await settleWithin(sess.starting, START_SETTLE_TIMEOUT_MS);
+  let settled = true;
+  if (sess.starting) settled = await settleWithin(sess.starting, START_SETTLE_TIMEOUT_MS);
+  if (!settled) {
+    console.warn(`[wa:${id}] start sebelumnya belum selesai dalam ${START_SETTLE_TIMEOUT_MS}ms — dilepas.`);
+    sess.starting = null;
+  }
   clearReconnect(sess);
-  cleanupCreds(sess); // sisa pairing gagal tak layak di-resume
+  // Sisa pairing gagal tak layak di-resume — tapi jangan hapus profil kalau
+  // Chromium lama mungkin masih memegangnya (lihat catatan di rescan).
+  if (settled) cleanupCreds(sess);
   sess.pairingPhone = normalized; // penanda jalur kode — dibaca saat membuat Client
   sess.pairingCode = null;
   sess.pairingCodeExpiresAt = null;
