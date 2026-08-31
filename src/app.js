@@ -6,6 +6,7 @@ const config = require('../config');
 const apiRoutes = require('./routes');
 const { corsMiddleware } = require('./middleware/cors');
 const { errorHandler } = require('./middleware/errorHandler');
+const { apiKeyMiddleware } = require('./middleware/apiKey');
 
 const app = express();
 
@@ -30,6 +31,7 @@ app.use('/api', (_req, res, next) => {
   res.set('Cache-Control', 'no-store');
   next();
 });
+app.use('/api', apiKeyMiddleware); // sebelum routes — lihat catatan di middleware
 app.use('/api', apiRoutes);
 
 // 404 fallback (harus setelah semua route)

@@ -19,7 +19,7 @@ function corsMiddleware(req, res, next) {
     // lintas-origin. Tanpa ini preflight menolak dan tombol Rename mati total.
     // Daftar ini harus mencakup SEMUA metode yang dipakai routes/.
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, Authorization');
 
     if (req.method === 'OPTIONS') {
       return res.sendStatus(204);

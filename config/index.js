@@ -22,6 +22,9 @@ const config = {
   // anti-ban (401 device_removed / logout di tengah kirim). 0 = nonaktif.
   warmupDelaySeconds: parseFloat(process.env.WARMUP_DELAY_SECONDS || '0'),
   maxUploadSize: parseInt(process.env.MAX_UPLOAD_SIZE || String(5 * 1024 * 1024), 10),
+  // API key opsional untuk /api. Kosong = nonaktif (perilaku lama, cocok untuk
+  // pemakaian lokal). Isi bila port bisa dijangkau pihak lain.
+  apiKey: (process.env.API_KEY || '').trim(),
   // Origin web yang diizinkan CORS (comma-separated); kosong = same-origin
   corsOrigins: (process.env.CORS_ORIGINS || '')
     .split(',')

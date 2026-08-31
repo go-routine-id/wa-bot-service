@@ -131,6 +131,7 @@ Media di-serve di `/uploads/...` (mis. `http://localhost:3000/uploads/broadcasts
 | `WARMUP_DELAY_SECONDS` | `0` | Jeda pemanasan (detik) sebelum pesan pertama broadcast — mitigasi anti-ban untuk device baru |
 | `MAX_UPLOAD_SIZE` | `5242880` | Maks. ukuran gambar (5 MB) |
 | `CORS_ORIGINS` | *(kosong)* | Origin web yang diizinkan (pisah koma) |
+| `API_KEY` | *(kosong)* | API key untuk `/api`. Kosong = nonaktif. Klien mengirimnya lewat header `X-API-Key` (frontend: `localStorage.setItem('WA_API_KEY', '…')`) |
 
 ## Struktur
 
