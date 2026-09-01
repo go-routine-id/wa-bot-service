@@ -1,6 +1,7 @@
 'use strict';
 
 const { getDb } = require('../../config/database');
+const { requireOrg } = require('./tenant');
 
 const db = getDb();
 
@@ -8,36 +9,56 @@ const COLUMNS = `id, name, text_content AS textContent, media_path AS mediaPath,
   created_at AS createdAt, updated_at AS updatedAt`;
 
 const templateRepository = {
-  create({ name, textContent, mediaPath = null }) {
+  create({ name, textContent, mediaPath = null, orgId }) {
+    requireOrg(orgId, 'templateRepository.create');
     const info = db
-      .prepare(`INSERT INTO templates (name, text_content, media_path) VALUES (?, ?, ?)`)
-      .run(name, textContent, mediaPath);
-    return this.findById(info.lastInsertRowid);
+      .prepare(
+        `INSERT INTO templates (name, text_content, media_path, owner_org_id) VALUES (?, ?, ?, ?)`
+      )
+      .run(name, textContent, mediaPath, orgId);
+    return this.findById(info.lastInsertRowid, orgId);
   },
 
-  findById(id) {
-    return db.prepare(`SELECT ${COLUMNS} FROM templates WHERE id = ?`).get(id) ?? null;
+  findById(id, orgId) {
+    requireOrg(orgId, 'templateRepository.findById');
+    return (
+      db
+        .prepare(`SELECT ${COLUMNS} FROM templates WHERE id = ? AND owner_org_id = ?`)
+        .get(id, orgId) ?? null
+    );
   },
 
-  findAll() {
-    return db.prepare(`SELECT ${COLUMNS} FROM templates ORDER BY id DESC`).all();
+  findAll(orgId) {
+    requireOrg(orgId, 'templateRepository.findAll');
+    return db
+      .prepare(`SELECT ${COLUMNS} FROM templates WHERE owner_org_id = ? ORDER BY id DESC`)
+      .all(orgId);
   },
 
-  update(id, { name, textContent, mediaPath = null }) {
+  update(id, { name, textContent, mediaPath = null, orgId }) {
+    requireOrg(orgId, 'templateRepository.update');
     db.prepare(
       `UPDATE templates
        SET name = ?, text_content = ?, media_path = ?, updated_at = datetime('now')
-       WHERE id = ?`
-    ).run(name, textContent, mediaPath, id);
-    return this.findById(id);
+       WHERE id = ? AND owner_org_id = ?`
+    ).run(name, textContent, mediaPath, id, orgId);
+    return this.findById(id, orgId);
   },
 
-  remove(id) {
-    db.prepare('DELETE FROM templates WHERE id = ?').run(id);
+  remove(id, orgId) {
+    requireOrg(orgId, 'templateRepository.remove');
+    db.prepare('DELETE FROM templates WHERE id = ? AND owner_org_id = ?').run(id, orgId);
   },
 
-  /** Cek apakah sebuah media_path masih dipakai template lain. */
-  findByMediaPath(mediaPath) {
+  /**
+   * Cek apakah sebuah media_path masih dipakai template lain.
+   *
+   * SENGAJA lintas organisasi. Berkas media dibagi lewat path di disk, jadi
+   * pertanyaannya "apakah masih ada yang memakai berkas ini?" — bukan "apakah
+   * organisasi ini masih memakainya". Menyaring per organisasi di sini akan
+   * menghapus berkas yang masih dipakai tenant lain.
+   */
+  findByMediaPathUnscoped(mediaPath) {
     return (
       db
         .prepare('SELECT id FROM templates WHERE media_path = ? LIMIT 1')

@@ -112,7 +112,19 @@ async function authMiddleware(req, res, next) {
   // Preflight tidak membawa header kustom — biarkan CORS yang menilainya.
   if (req.method === 'OPTIONS') return next();
 
-  if (!accountService.enabled()) return next(); // autentikasi nonaktif
+  if (!accountService.enabled()) {
+    // Autentikasi nonaktif → tetap sediakan konteks tenant. Lapisan di bawah
+    // dengan begitu punya SATU jalur saja; tidak ada cabang khusus "tanpa
+    // organisasi" yang bisa lolos dari penyaringan.
+    req.auth = {
+      accountId: null,
+      orgId: config.authFallbackOrgId,
+      principalType: 'anonymous',
+      permissions: [],
+      via: 'disabled',
+    };
+    return next();
+  }
 
   const apiKey = req.get('X-API-Key');
   const authorization = req.get('Authorization') || '';

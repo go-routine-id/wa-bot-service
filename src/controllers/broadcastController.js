@@ -8,30 +8,33 @@ function parsePagination(query) {
   return { limit, offset };
 }
 
+/** Organisasi pemanggil — selalu ada, dipasang middleware auth. */
+const org = (req) => req.auth.orgId;
+
 const broadcastController = {
   create(req, res) {
-    const data = broadcastService.create(req.body);
+    const data = broadcastService.create(req.body, org(req));
     res.status(201).json({ data });
   },
 
   list(req, res) {
     const { limit, offset } = parsePagination(req.query);
-    res.json({ data: broadcastService.list({ limit, offset }) });
+    res.json({ data: broadcastService.list({ limit, offset }, org(req)) });
   },
 
   detail(req, res) {
-    const data = broadcastService.getDetail(Number(req.params.id));
+    const data = broadcastService.getDetail(Number(req.params.id), org(req));
     res.json({ data });
   },
 
   cancel(req, res) {
-    const data = broadcastService.cancel(Number(req.params.id));
+    const data = broadcastService.cancel(Number(req.params.id), org(req));
     res.json({ data });
   },
 
   /** Tambah nomor tujuan: body { recipients }. Hanya broadcast berstatus 'pending'. */
   addRecipients(req, res) {
-    const data = broadcastService.addRecipients(Number(req.params.id), req.body?.recipients);
+    const data = broadcastService.addRecipients(Number(req.params.id), req.body?.recipients, org(req));
     res.status(201).json({ data });
   },
 
@@ -43,15 +46,18 @@ const broadcastController = {
     const data = broadcastService.removeRecipient(
       Number(req.params.id),
       Number(req.params.recipientId),
-      { confirmSent: req.query?.confirmSent === 'true' }
+      { confirmSent: req.query?.confirmSent === 'true' },
+      org(req)
     );
     res.json({ data });
   },
 
   retry(req, res) {
-    const data = broadcastService.retry(Number(req.params.id), {
-      sessionId: req.body?.sessionId,
-    });
+    const data = broadcastService.retry(
+      Number(req.params.id),
+      { sessionId: req.body?.sessionId },
+      org(req)
+    );
     res.status(201).json({ data });
   },
 };

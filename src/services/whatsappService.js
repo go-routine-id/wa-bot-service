@@ -59,8 +59,27 @@ function hasCreds(id) {
   return fs.existsSync(path.join(config.authDir, `session-${id}`, '.linked'));
 }
 
+/**
+ * Sesi ADA di database — lintas organisasi, tanpa otorisasi.
+ *
+ * Dipakai runner latar dan pemeriksaan keunikan slug. Otorisasi dilakukan
+ * terpisah lewat assertOwned() di pintu HTTP.
+ */
 function sessionExists(id) {
-  return !!sessionRepository.findById(id);
+  return !!sessionRepository.findByIdUnscoped(id);
+}
+
+/**
+ * Pastikan sesi ini milik organisasi pemanggil.
+ *
+ * Melempar 404 — BUKAN 403 — untuk sesi milik organisasi lain. Membalas 403
+ * akan memberi tahu bahwa id itu ada di suatu tempat, dan itu sudah kebocoran:
+ * penyerang bisa menebak-nebak slug untuk memetakan tenant lain.
+ */
+function assertOwned(id, orgId) {
+  const row = sessionRepository.findById(id, orgId);
+  if (!row) throw new HttpError(404, 'Sesi tidak ditemukan');
+  return row;
 }
 
 function slugify(name) {
@@ -79,7 +98,10 @@ function generateUniqueSlug(name) {
   let id = base;
   let n = 2;
   while (
-    sessionRepository.findById(id) ||
+    // Lintas organisasi dengan sengaja: slug dipakai sebagai nama folder
+    // kredensial di disk, jadi bentrok antar tenant akan membuat dua organisasi
+    // berbagi satu folder sesi WhatsApp.
+    sessionRepository.findByIdUnscoped(id) ||
     fs.existsSync(path.join(config.authDir, `session-${id}`))
   ) {
     id = `${base}-${n++}`;
@@ -445,7 +467,7 @@ async function destroy(id) {
 /** Boot: start semua sesi yang punya kredensial. Sesi tanpa kredensial tetap tampil (nonaktif). */
 function startAll() {
   ensureAuthDir();
-  for (const s of sessionRepository.findAll()) {
+  for (const s of sessionRepository.findAllUnscoped()) {
     if (!hasCreds(s.id)) continue; // tanpa kredensial → tidak di-start (anti-QR otomatis)
     const sess = registry.get(s.id) || createSession(s.id, s.name);
     registry.set(s.id, sess);
@@ -456,10 +478,10 @@ function startAll() {
 }
 
 /** Tambah sesi baru → auto-start (muncul QR bila belum ter-pair). */
-function addSession(name) {
+function addSession(name, orgId) {
   ensureAuthDir();
   const id = generateUniqueSlug(name);
-  sessionRepository.create({ id, name });
+  sessionRepository.create({ id, name, orgId });
   const sess = createSession(id, name);
   registry.set(id, sess);
   start(id).catch((err) => {
@@ -468,9 +490,9 @@ function addSession(name) {
   return getStatus(id);
 }
 
-function renameSession(id, name) {
-  if (!sessionExists(id)) throw new HttpError(404, 'Sesi tidak ditemukan');
-  sessionRepository.updateName(id, name);
+function renameSession(id, name, orgId) {
+  assertOwned(id, orgId);
+  sessionRepository.updateName(id, name, orgId);
   const sess = registry.get(id);
   if (sess) sess.name = name;
   return getStatus(id);
@@ -480,7 +502,8 @@ function renameSession(id, name) {
  * Hapus sesi total: row + folder auth + client. Controller WAJIB men-cancel
  * broadcast yang memakai sesi ini SEBELUM memanggil deleteSession (lihat sessionController).
  */
-async function deleteSession(id) {
+async function deleteSession(id, orgId) {
+  assertOwned(id, orgId);
   const sess = registry.get(id);
   if (sess) {
     sess.gen += 1;
@@ -498,7 +521,7 @@ async function deleteSession(id) {
     registry.delete(id);
   }
   cleanupCreds({ authDir: path.join(config.authDir, `session-${id}`) });
-  sessionRepository.remove(id);
+  sessionRepository.remove(id, orgId);
 }
 
 /**
@@ -508,11 +531,11 @@ async function deleteSession(id) {
  * 'ready' pertama — klik "Hubungkan" pasca-restart tak boleh menghapus
  * kredensial sesi yang masih valid.
  */
-async function rescan(id) {
-  if (!sessionExists(id)) throw new HttpError(404, 'Sesi tidak ditemukan');
+async function rescan(id, orgId) {
+  assertOwned(id, orgId);
   let sess = registry.get(id);
   if (!sess) {
-    const row = sessionRepository.findById(id);
+    const row = sessionRepository.findByIdUnscoped(id);
     sess = createSession(id, row.name);
     registry.set(id, sess);
   }
@@ -577,12 +600,12 @@ function normalizePairingPhone(raw) {
  * ter-pair memakai "Hubungkan" (rescan me-resume kredensial), karena membuang
  * kredensial sah demi pairing baru akan melepas linked device yang masih hidup.
  */
-async function requestPairingCode(id, phone) {
-  if (!sessionExists(id)) throw new HttpError(404, 'Sesi tidak ditemukan');
+async function requestPairingCode(id, phone, orgId) {
+  assertOwned(id, orgId);
   const normalized = normalizePairingPhone(phone);
   let sess = registry.get(id);
   if (!sess) {
-    const row = sessionRepository.findById(id);
+    const row = sessionRepository.findByIdUnscoped(id);
     sess = createSession(id, row.name);
     registry.set(id, sess);
   }
@@ -624,8 +647,8 @@ async function requestPairingCode(id, phone) {
 }
 
 /** Logout penuh satu sesi: invalidasi di server WhatsApp + hapus kredensial; row sesi tetap. */
-async function logoutSession(id) {
-  if (!sessionExists(id)) throw new HttpError(404, 'Sesi tidak ditemukan');
+async function logoutSession(id, orgId) {
+  assertOwned(id, orgId); // sekaligus memastikan sesinya ada
   const sess = registry.get(id);
   if (sess) {
     sess.gen += 1;
@@ -663,8 +686,9 @@ async function destroyAll() {
 
 /* ---------------- status / read ---------------- */
 
+/** Status runtime satu sesi. Otorisasi dilakukan pemanggil (assertOwned). */
 function getStatus(id) {
-  const row = sessionRepository.findById(id);
+  const row = sessionRepository.findByIdUnscoped(id);
   if (!row) return null;
   const sess = registry.get(id);
   return {
@@ -685,8 +709,8 @@ function getStatus(id) {
   };
 }
 
-function listSessions() {
-  return sessionRepository.findAll().map((r) => getStatus(r.id));
+function listSessions(orgId) {
+  return sessionRepository.findAll(orgId).map((r) => getStatus(r.id));
 }
 
 function isConnected(id) {
@@ -729,6 +753,7 @@ module.exports = {
   getStatus,
   listSessions,
   sessionExists,
+  assertOwned,
   hasCreds,
   isConnected,
   sendMessage,

@@ -54,7 +54,8 @@ function buildRunner(sendBehaviour) {
   });
 
   stub(path.join(SRC, 'repositories', 'broadcastRepository'), {
-    findById: () => ({ ...broadcast }),
+    // Runner memakai varian tanpa penyaring organisasi — ia proses latar.
+    findByIdUnscoped: () => ({ ...broadcast }),
     markRunning: () => {},
     updateCounts: () => {},
     markFailed: (_id, error) => Object.assign(final, { state: 'failed', error }),

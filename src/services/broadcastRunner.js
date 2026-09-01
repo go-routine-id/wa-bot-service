@@ -5,6 +5,10 @@ const { toChatId } = require('../utils/phone');
 const { classifySendError } = require('../utils/sendError');
 const config = require('../../config');
 const whatsappService = require('./whatsappService');
+// Runner memakai varian *Unscoped: ia berjalan di latar tanpa konteks request,
+// dan broadcast yang diprosesnya sudah ditetapkan organisasinya saat dibuat
+// lewat jalur HTTP yang terotorisasi. Tidak ada keputusan izin yang diambil di
+// sini — hanya menjalankan pekerjaan yang sudah disetujui.
 const broadcastRepository = require('../repositories/broadcastRepository');
 const recipientRepository = require('../repositories/recipientRepository');
 
@@ -161,7 +165,7 @@ async function processRecipient(broadcast, recipient, { applyDelay = true } = {}
  * memakainya untuk memutuskan perlu-tidaknya jeda sebelum broadcast berikutnya.
  */
 async function runBroadcast(broadcastId) {
-  let broadcast = broadcastRepository.findById(broadcastId);
+  let broadcast = broadcastRepository.findByIdUnscoped(broadcastId);
   if (!broadcast) {
     clearFlag(broadcastId); // jangan tinggalkan flag yatim di memori
     return 0;
@@ -178,7 +182,7 @@ async function runBroadcast(broadcastId) {
   }
 
   broadcastRepository.markRunning(broadcast.id);
-  broadcast = broadcastRepository.findById(broadcast.id); // re-read (started_at dll.)
+  broadcast = broadcastRepository.findByIdUnscoped(broadcast.id); // re-read (started_at dll.)
 
   let sentCount = broadcast.sentCount;
   let failedCount = broadcast.failedCount;
@@ -218,7 +222,7 @@ async function runBroadcast(broadcastId) {
   clearFlag(broadcast.id);
 
   const sentThisRun = sentCount - broadcast.sentCount; // dipakai queue untuk memberi jarak
-  const fresh = broadcastRepository.findById(broadcast.id);
+  const fresh = broadcastRepository.findByIdUnscoped(broadcast.id);
   if (!fresh || fresh.status === 'cancelled') return sentThisRun;
 
   if (fatal) {
@@ -269,7 +273,7 @@ async function runQueueLoop() {
       sentThisRun = await runBroadcast(next.id);
     } catch (err) {
       console.error(`[runner] queue #${next.id} error:`, err);
-      const b = broadcastRepository.findById(next.id);
+      const b = broadcastRepository.findByIdUnscoped(next.id);
       if (b && ['pending', 'running'].includes(b.status)) {
         broadcastRepository.markFailed(next.id, err.message, b.sentCount, b.failedCount);
       }
@@ -309,7 +313,7 @@ function spawnParallel(broadcastId) {
   setImmediate(() => {
     runBroadcast(broadcastId).catch((err) => {
       console.error(`[runner] parallel #${broadcastId} error:`, err);
-      const b = broadcastRepository.findById(broadcastId);
+      const b = broadcastRepository.findByIdUnscoped(broadcastId);
       if (b && ['pending', 'running'].includes(b.status)) {
         broadcastRepository.markFailed(broadcastId, err.message, b.sentCount, b.failedCount);
       }

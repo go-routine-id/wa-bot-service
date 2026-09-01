@@ -197,7 +197,9 @@ test('ACCOUNT_SERVICE_URL kosong → autentikasi nonaktif', async () => {
   process.env.ACCOUNT_SERVICE_URL = '';
   const { err, auth } = await run({});
   assert.ifError(err);
-  assert.strictEqual(auth, undefined);
+  // Tetap ada konteks tenant supaya lapisan di bawah punya satu jalur saja.
+  assert.strictEqual(auth.orgId, 'local');
+  assert.strictEqual(auth.principalType, 'anonymous');
   process.env.ACCOUNT_SERVICE_URL = simpan;
 });
 

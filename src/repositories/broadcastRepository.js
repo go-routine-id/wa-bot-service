@@ -1,6 +1,7 @@
 'use strict';
 
 const { getDb } = require('../../config/database');
+const { requireOrg } = require('./tenant');
 const { INVALID_NUMBER_ERROR } = require('../models/broadcast');
 
 const db = getDb();
@@ -23,6 +24,15 @@ const COLUMNS = `b.id, b.template_id AS templateId, b.mode, b.rate_per_minute AS
 const FROM = `FROM broadcasts b LEFT JOIN sessions s ON s.id = b.session_id`;
 
 const broadcastRepository = {
+  /**
+   * Method di repository ini terbagi dua:
+   *   - BERSAINGAN ORGANISASI (create/findById/list/remove) — dipanggil dari
+   *     jalur HTTP, wajib menyaring owner_org_id.
+   *   - TRANSISI STATUS (markRunning, updateCounts, dst.) — dipanggil runner
+   *     latar yang bekerja pada baris yang SUDAH ditentukan lewat jalur
+   *     terotorisasi. Menyaring organisasi di sana tidak menambah keamanan dan
+   *     justru memaksa konteks request masuk ke proses latar yang tidak punya.
+   */
   create({
     templateId = null,
     sessionId = null,
@@ -32,12 +42,14 @@ const broadcastRepository = {
     messageText,
     mediaPath = null,
     totalRecipients,
+    orgId,
   }) {
+    requireOrg(orgId, 'broadcastRepository.create');
     const info = db
       .prepare(
         `INSERT INTO broadcasts
-           (template_id, session_id, mode, rate_per_minute, delay_seconds, message_text, media_path, total_recipients)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+           (template_id, session_id, mode, rate_per_minute, delay_seconds, message_text, media_path, total_recipients, owner_org_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         templateId,
@@ -47,19 +59,37 @@ const broadcastRepository = {
         delaySeconds,
         messageText,
         mediaPath,
-        totalRecipients
+        totalRecipients,
+        orgId
       );
-    return this.findById(info.lastInsertRowid);
+    return this.findById(info.lastInsertRowid, orgId);
   },
 
-  findById(id) {
+  findById(id, orgId) {
+    requireOrg(orgId, 'broadcastRepository.findById');
+    return (
+      db
+        .prepare(`SELECT ${COLUMNS} ${FROM} WHERE b.id = ? AND b.owner_org_id = ?`)
+        .get(id, orgId) ?? null
+    );
+  },
+
+  /**
+   * TANPA penyaring organisasi — hanya untuk runner latar (queue worker,
+   * pemulihan saat boot) yang bekerja pada broadcast yang organisasinya sudah
+   * ditetapkan saat dibuat. JANGAN dipanggil dari jalur HTTP.
+   */
+  findByIdUnscoped(id) {
     return db.prepare(`SELECT ${COLUMNS} ${FROM} WHERE b.id = ?`).get(id) ?? null;
   },
 
-  list({ limit = 50, offset = 0 } = {}) {
+  list({ limit = 50, offset = 0, orgId } = {}) {
+    requireOrg(orgId, 'broadcastRepository.list');
     return db
-      .prepare(`SELECT ${COLUMNS} ${FROM} ORDER BY b.id DESC LIMIT ? OFFSET ?`)
-      .all(limit, offset);
+      .prepare(
+        `SELECT ${COLUMNS} ${FROM} WHERE b.owner_org_id = ? ORDER BY b.id DESC LIMIT ? OFFSET ?`
+      )
+      .all(orgId, limit, offset);
   },
 
   markRunning(id) {
@@ -123,7 +153,13 @@ const broadcastRepository = {
   },
 
   /** Broadcast milik satu sesi dengan status tertentu (dipakai cancelForSession). */
-  findBySessionAndStatus(sessionId, statuses) {
+  /**
+   * Dipanggil saat sebuah sesi dihapus. Sesi-nya sudah tersaring organisasi di
+   * lapisan atas, tapi disaring lagi di sini: kalau suatu saat pemanggilnya
+   * berubah, pembatalan tidak boleh menyentuh broadcast tenant lain.
+   */
+  findBySessionAndStatus(sessionId, statuses, orgId) {
+    requireOrg(orgId, 'broadcastRepository.findBySessionAndStatus');
     if (statuses.length === 0) return [];
     const placeholders = statuses.map(() => '?').join(',');
     return db
@@ -166,7 +202,8 @@ const broadcastRepository = {
   },
 
   /** Cek apakah sebuah media_path masih direferensikan broadcast manapun. */
-  findByMediaPath(mediaPath) {
+  /** Lintas organisasi — lihat alasannya di templateRepository. */
+  findByMediaPathUnscoped(mediaPath) {
     return (
       db
         .prepare('SELECT id FROM broadcasts WHERE media_path = ? LIMIT 1')
@@ -174,8 +211,9 @@ const broadcastRepository = {
     );
   },
 
-  remove(id) {
-    db.prepare('DELETE FROM broadcasts WHERE id = ?').run(id);
+  remove(id, orgId) {
+    requireOrg(orgId, 'broadcastRepository.remove');
+    db.prepare('DELETE FROM broadcasts WHERE id = ? AND owner_org_id = ?').run(id, orgId);
   },
 };
 

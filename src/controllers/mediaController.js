@@ -23,7 +23,7 @@ const mediaController = {
     // Kalau file ternyata sudah direferensikan sebuah template, menghapusnya akan
     // membuat gambar template rusak — tolak, sejalan dengan cleanupMediaIfUnused
     // di templateController.
-    if (templateRepository.findByMediaPath(mediaPath)) {
+    if (templateRepository.findByMediaPathUnscoped(mediaPath)) {
       throw new HttpError(409, 'Media masih dipakai template — hapus/ubah templatenya dulu');
     }
     mediaService.delete(mediaPath);

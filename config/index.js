@@ -55,6 +55,11 @@ const config = {
   // sengaja: jalur ini satu-satunya yang melihat pencabutan kredensial.
   accountWhoamiCacheMs: parseInt(process.env.ACCOUNT_WHOAMI_CACHE_SECONDS || '60', 10) * 1000,
   accountServiceTimeoutMs: parseInt(process.env.ACCOUNT_SERVICE_TIMEOUT_MS || '5000', 10),
+  // Organisasi yang dipakai saat autentikasi NONAKTIF, supaya lapisan di bawah
+  // selalu menerima orgId dan tidak perlu punya cabang "tanpa tenant". Tanpa
+  // ini, mode tanpa auth akan menjadi satu-satunya jalur yang melewati
+  // penyaringan — persis jalur yang paling mudah lupa diuji.
+  authFallbackOrgId: (process.env.AUTH_FALLBACK_ORG_ID || 'local').trim(),
 
   // Origin web yang diizinkan CORS (comma-separated); kosong = same-origin
   corsOrigins: (process.env.CORS_ORIGINS || '')

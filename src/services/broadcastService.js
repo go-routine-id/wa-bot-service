@@ -15,7 +15,7 @@ const whatsappService = require('./whatsappService');
  * insert row → copy media → insert recipient → update counts invalid → dispatch.
  * recipientItems: [{ number, status, error? }] (status 'pending'/'failed').
  */
-function createCore({ templateId, sessionId, mode, ratePerMinute, delaySeconds = null, messageText, mediaPath, recipientItems }) {
+function createCore({ templateId, sessionId, mode, ratePerMinute, delaySeconds = null, messageText, mediaPath, recipientItems, orgId }) {
   const invalidCount = recipientItems.filter((item) => item.status === 'failed').length;
 
   const broadcast = broadcastRepository.create({
@@ -32,7 +32,7 @@ function createCore({ templateId, sessionId, mode, ratePerMinute, delaySeconds =
   // Copy media ke folder broadcast agar hapus template tidak merusak history
   if (mediaPath) {
     if (!mediaService.exists(mediaPath)) {
-      broadcastRepository.remove(broadcast.id);
+      broadcastRepository.remove(broadcast.id, orgId);
       throw new HttpError(400, 'File media tidak ditemukan');
     }
     const finalMediaPath = mediaService.copyToBroadcast(broadcast.id, mediaPath);
@@ -52,7 +52,7 @@ function createCore({ templateId, sessionId, mode, ratePerMinute, delaySeconds =
     broadcastRunner.enqueue(broadcast.id);
   }
 
-  return broadcastRepository.findById(broadcast.id);
+  return broadcastRepository.findById(broadcast.id, orgId);
 }
 
 /**
@@ -78,7 +78,7 @@ const broadcastService = {
    * Buat broadcast: validasi → resolve pesan dari template/teks langsung →
    * createCore (insert/copy/recipient/dispatch).
    */
-  create(body) {
+  create(body, orgId) {
     const input = validateBroadcastCreate(body);
     // Sesi pengirim wajib ADA (bukan sekadar string non-empty) — cegah broadcast
     // mengarah ke sesi yang sudah dihapus / tidak pernah ada.
@@ -95,7 +95,7 @@ const broadcastService = {
     let templateId = input.templateId;
 
     if (templateId) {
-      const template = templateRepository.findById(templateId);
+      const template = templateRepository.findById(templateId, orgId);
       if (!template) throw new HttpError(404, 'Template tidak ditemukan');
       messageText = template.textContent;
       mediaPath = template.mediaPath;
@@ -125,8 +125,8 @@ const broadcastService = {
    * Mendukung override `sessionId` baru bila sesi asal sudah dihapus atau ingin dialihkan.
    * History broadcast asli tetap utuh; retry tampil sebagai entri baru yang transparan.
    */
-  retry(id, { sessionId } = {}) {
-    const source = broadcastRepository.findById(id);
+  retry(id, { sessionId } = {}, orgId) {
+    const source = broadcastRepository.findById(id, orgId);
     if (!source) throw new HttpError(404, 'Broadcast tidak ditemukan');
 
     // Tentukan sesi target: jika user memilih sessionId baru via body, pakai itu.
@@ -182,8 +182,8 @@ const broadcastService = {
    * Nomor duplikat diabaikan (UNIQUE broadcast_id+recipient_number), nomor tak
    * valid tetap dicatat sebagai 'failed' supaya transparan seperti alur create.
    */
-  addRecipients(id, rawRecipients) {
-    const broadcast = broadcastRepository.findById(id);
+  addRecipients(id, rawRecipients, orgId) {
+    const broadcast = broadcastRepository.findById(id, orgId);
     if (!broadcast) throw new HttpError(404, 'Broadcast tidak ditemukan');
     assertRecipientsEditable(broadcast);
 
@@ -211,8 +211,8 @@ const broadcastService = {
    * Recipient 'sent' adalah bukti pesan benar-benar terkirim — menghapusnya
    * butuh konfirmasi eksplisit (confirmSent) dan dicatat di log sebagai warning.
    */
-  removeRecipient(id, recipientId, { confirmSent = false } = {}) {
-    const broadcast = broadcastRepository.findById(id);
+  removeRecipient(id, recipientId, { confirmSent = false } = {}, orgId) {
+    const broadcast = broadcastRepository.findById(id, orgId);
     if (!broadcast) throw new HttpError(404, 'Broadcast tidak ditemukan');
     assertRecipientsEditable(broadcast);
 
@@ -242,19 +242,19 @@ const broadcastService = {
     return broadcastService.getDetail(id);
   },
 
-  list({ limit, offset } = {}) {
-    return broadcastRepository.list({ limit, offset });
+  list({ limit, offset } = {}, orgId) {
+    return broadcastRepository.list({ limit, offset, orgId });
   },
 
-  getDetail(id) {
-    const broadcast = broadcastRepository.findById(id);
+  getDetail(id, orgId) {
+    const broadcast = broadcastRepository.findById(id, orgId);
     if (!broadcast) throw new HttpError(404, 'Broadcast tidak ditemukan');
     const recipients = recipientRepository.findByBroadcastId(id);
     return { broadcast, recipients };
   },
 
-  cancel(id) {
-    const broadcast = broadcastRepository.findById(id);
+  cancel(id, orgId) {
+    const broadcast = broadcastRepository.findById(id, orgId);
     if (!broadcast) throw new HttpError(404, 'Broadcast tidak ditemukan');
     if (!['pending', 'running'].includes(broadcast.status)) {
       throw new HttpError(400, `Broadcast tidak dapat dibatalkan (status: ${broadcast.status})`);
@@ -267,7 +267,7 @@ const broadcastService = {
     // menyelesaikan satu recipient → hitung ulang dari baris recipient yang nyata
     // supaya angka akhir tidak mundur.
     broadcastRepository.recalcCounts(id);
-    return broadcastRepository.findById(id);
+    return broadcastRepository.findById(id, orgId);
   },
 
   /**
@@ -275,8 +275,8 @@ const broadcastService = {
    * dihapus). Dipanggil sessionController SEBELUM whatsappService.deleteSession —
    * urutan ini mencegah circular dependency whatsapp → broadcast.
    */
-  cancelForSession(sessionId, errorMsg = 'Sesi pengirim dihapus') {
-    const running = broadcastRepository.findBySessionAndStatus(sessionId, ['pending', 'running']);
+  cancelForSession(sessionId, errorMsg = 'Sesi pengirim dihapus', orgId) {
+    const running = broadcastRepository.findBySessionAndStatus(sessionId, ['pending', 'running'], orgId);
     for (const b of running) {
       broadcastRunner.setCancelled(b.id, true);
       recipientRepository.bulkUpdateStatus(b.id, ['pending', 'sending'], 'skipped', errorMsg);
