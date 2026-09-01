@@ -117,6 +117,51 @@ Perilaku ini berlaku **per sesi**:
 
 Media di-serve di `/uploads/...` (mis. `http://localhost:3000/uploads/broadcasts/<id>/image.jpg`).
 
+## Autentikasi & multi-organisasi
+
+API ini diverifikasi terhadap **account-service** (pusat identitas ikavia) dan
+seluruh datanya terisolasi per **organisasi**.
+
+`ACCOUNT_SERVICE_URL` kosong = autentikasi **nonaktif**, dan itu dicetak
+mencolok saat boot. Jangan dipakai di production: API ini bisa mengirim
+WhatsApp dari nomor yang terhubung.
+
+### Ketiga model identitas didukung
+
+| Model | Kredensial | Organisasi (tenant) diambil dari |
+|---|---|---|
+| **Human account** | `Authorization: Bearer` dari `/auth/login` | klaim `org_id` |
+| **Service account** | `Bearer` dari `/auth/token-exchange` | klaim `org_id` |
+| **Service account** | `X-API-Key` mentah | `org_id` dari `/auth/whoami` |
+| **System account** | `Bearer` dari `/auth/system-token` | header **`X-Organization-Id`** |
+
+System account adalah kredensial level platform dan memang tidak terikat
+organisasi, jadi ia menyebut organisasi tujuannya sendiri. Header itu **hanya**
+dihormati bila kredensialnya tidak punya `org_id` — kredensial yang terikat
+organisasi tidak bisa memakainya untuk keluar dari organisasinya.
+
+Semua model wajib memegang izin `AUTH_REQUIRED_PERMISSION` (default
+`wa-bot:*`). Di account-service, service key `wa-bot` otomatis menjadi
+`wa-bot:*` di dalam JWT.
+
+> **Jebakan yang perlu diketahui:** JWT hasil `token-exchange` mengambil izin
+> dari *service grant* + `capabilities`, **bukan** dari kolom `permissions`
+> milik API key. Jadi kunci yang sama bisa berhasil lewat `X-API-Key` tapi
+> `403` setelah ditukar — periksa grant-nya, bukan permission kuncinya.
+
+### Data lama
+
+Migrasi `004` menambahkan `owner_org_id` **tanpa menebak pemilik** baris yang
+sudah ada. Baris lama karena itu tidak terlihat oleh siapa pun sampai
+dihubungkan:
+
+```bash
+npm run claim-orphans -- <org_id>            # pratinjau
+npm run claim-orphans -- <org_id> --commit   # menulis
+```
+
+`org_id` bisa dilihat dari `GET /api/v1/auth/whoami` di account-service.
+
 ## Konfigurasi (env)
 
 | Variable | Default | Keterangan |
