@@ -23,6 +23,18 @@ async function main() {
 
   app.listen(config.port, () => {
     console.log(`[server] berjalan di http://localhost:${config.port}`);
+    if (config.accountServiceUrl) {
+      console.log(
+        `[auth] aktif — verifikasi JWT ke ${config.accountServiceUrl}, izin wajib: ${config.authRequiredPermission}`
+      );
+    } else {
+      // Dicetak mencolok dengan sengaja. API ini bisa mengirim WhatsApp dari
+      // nomor yang terhubung, jadi berjalan tanpa autentikasi di lingkungan yang
+      // bisa dijangkau orang lain adalah kondisi yang tidak boleh terlewat.
+      console.warn(
+        '[auth] ⚠️  NONAKTIF — ACCOUNT_SERVICE_URL kosong, SELURUH /api terbuka tanpa kredensial'
+      );
+    }
   });
 }
 

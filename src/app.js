@@ -6,7 +6,7 @@ const config = require('../config');
 const apiRoutes = require('./routes');
 const { corsMiddleware } = require('./middleware/cors');
 const { errorHandler } = require('./middleware/errorHandler');
-const { apiKeyMiddleware } = require('./middleware/apiKey');
+const { authMiddleware } = require('./middleware/auth');
 
 const app = express();
 
@@ -31,7 +31,11 @@ app.use('/api', (_req, res, next) => {
   res.set('Cache-Control', 'no-store');
   next();
 });
-app.use('/api', apiKeyMiddleware); // sebelum routes — lihat catatan di middleware
+// Autentikasi terhadap account-service. Menggantikan middleware API key lokal
+// yang dulu ada di sini: keduanya memakai nama header `X-API-Key` untuk hal yang
+// BERBEDA, dan membiarkan keduanya hidup berdampingan membuat request yang
+// membawa header itu berperilaku tak terduga tergantung urutan middleware.
+app.use('/api', authMiddleware);
 app.use('/api', apiRoutes);
 
 // 404 fallback (harus setelah semua route)
