@@ -4,6 +4,7 @@ const express = require('express');
 const path = require('path');
 const config = require('../config');
 const apiRoutes = require('./routes');
+const authInfoRoutes = require('./routes/authInfoRoutes');
 const { corsMiddleware } = require('./middleware/cors');
 const { errorHandler } = require('./middleware/errorHandler');
 const { authMiddleware } = require('./middleware/auth');
@@ -35,6 +36,9 @@ app.use('/api', (_req, res, next) => {
 // yang dulu ada di sini: keduanya memakai nama header `X-API-Key` untuk hal yang
 // BERBEDA, dan membiarkan keduanya hidup berdampingan membuat request yang
 // membawa header itu berperilaku tak terduga tergantung urutan middleware.
+// SEBELUM authMiddleware: frontend perlu tahu ke mana harus login justru
+// ketika ia belum punya kredensial.
+app.use('/api', authInfoRoutes);
 app.use('/api', authMiddleware);
 app.use('/api', apiRoutes);
 

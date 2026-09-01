@@ -95,6 +95,7 @@ Perilaku ini berlaku **per sesi**:
 
 | Method | Path | Keterangan |
 |---|---|---|
+| GET | `/api/auth-info` | **tanpa autentikasi** — memberi tahu frontend apakah autentikasi menyala dan ke mana harus login. Tanpa ini, klien yang belum punya token tidak tahu alamat account-service dan hanya melihat dinding 401 |
 | GET | `/api/sessions` | daftar semua sesi + status runtime (dipoll frontend) |
 | POST | `/api/sessions` | tambah sesi `{ name }` → id slug otomatis (cth. `promo-ramadan`); QR muncul segera |
 | PATCH | `/api/sessions/:id` | rename `{ name }` (id sesi tetap — broadcast lama ikut menampilkan nama baru) |
