@@ -70,6 +70,18 @@ function sessionExists(id) {
 }
 
 /**
+ * Sesi ada DAN milik organisasi pemanggil.
+ *
+ * Inilah yang wajib dipakai jalur HTTP. Memakai sessionExists() di sana membuat
+ * satu organisasi bisa menunjuk sesi organisasi lain sebagai pengirim — dan
+ * karena slug sesi ditebak dari nama ("utama", "promo"), menebaknya mudah.
+ * Akibatnya pesan terkirim dari NOMOR WHATSAPP milik organisasi lain.
+ */
+function sessionExistsForOrg(id, orgId) {
+  return !!sessionRepository.findById(id, orgId);
+}
+
+/**
  * Pastikan sesi ini milik organisasi pemanggil.
  *
  * Melempar 404 — BUKAN 403 — untuk sesi milik organisasi lain. Membalas 403
@@ -753,6 +765,7 @@ module.exports = {
   getStatus,
   listSessions,
   sessionExists,
+  sessionExistsForOrg,
   assertOwned,
   hasCreds,
   isConnected,

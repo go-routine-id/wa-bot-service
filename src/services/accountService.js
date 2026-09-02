@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const config = require('../../config');
 
 /**
@@ -109,7 +110,7 @@ const whoamiCache = new Map(); // hash kunci → { data, fetchedAt }
 function cacheKeyFor(apiKey) {
   // Kunci mentah TIDAK dipakai sebagai key map supaya tidak ikut tercetak bila
   // isi map pernah di-dump saat debugging.
-  return require('crypto').createHash('sha256').update(String(apiKey)).digest('hex');
+  return crypto.createHash('sha256').update(String(apiKey)).digest('hex');
 }
 
 /**

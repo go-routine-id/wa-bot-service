@@ -82,7 +82,14 @@ function verifyRS256(token, publicKeyPem, { issuer, audience, clockToleranceSec 
   const payload = parseJson(base64UrlDecode(payloadB64), 'Payload');
   const now = Math.floor(Date.now() / 1000);
 
-  if (typeof payload.exp === 'number' && now > payload.exp + clockToleranceSec) {
+  // `exp` WAJIB ada. Bentuk sebelumnya hanya memeriksa bila klaimnya kebetulan
+  // ada, sehingga token tanpa `exp` berlaku selamanya. Seluruh jalur terbitan
+  // account-service (login, token-exchange, system-token) selalu mengisinya,
+  // jadi mewajibkannya tidak memutus siapa pun.
+  if (typeof payload.exp !== 'number') {
+    throw new JwtError('Token tanpa masa berlaku (exp)', 'malformed');
+  }
+  if (now > payload.exp + clockToleranceSec) {
     throw new JwtError('Token kedaluwarsa', 'expired');
   }
   if (typeof payload.nbf === 'number' && now + clockToleranceSec < payload.nbf) {

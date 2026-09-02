@@ -82,7 +82,7 @@ const broadcastService = {
     const input = validateBroadcastCreate(body);
     // Sesi pengirim wajib ADA (bukan sekadar string non-empty) — cegah broadcast
     // mengarah ke sesi yang sudah dihapus / tidak pernah ada.
-    if (!whatsappService.sessionExists(input.sessionId)) {
+    if (!whatsappService.sessionExistsForOrg(input.sessionId, orgId)) {
       throw new HttpError(400, 'Sesi pengirim tidak ditemukan');
     }
     const { valid, invalid } = parseTargets(input.recipients);
@@ -140,7 +140,7 @@ const broadcastService = {
       );
     }
 
-    if (!whatsappService.sessionExists(targetSessionId)) {
+    if (!whatsappService.sessionExistsForOrg(targetSessionId, orgId)) {
       throw new HttpError(
         400,
         `Sesi pengirim "${targetSessionId}" tidak ditemukan — pilih sesi pengirim yang aktif.`

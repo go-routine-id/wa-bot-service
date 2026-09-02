@@ -73,7 +73,12 @@ async function verifyBearer(token) {
 function toHttpError(err) {
   if (err instanceof HttpError) return err;
   if (err instanceof accountService.AccountServiceError) {
-    return new HttpError(err.status === 503 ? 503 : 401, err.message);
+    // Gangguan di sisi account-service (5xx, 429, tak terjangkau) BUKAN salah
+    // kredensial. Membalas 401 membuat frontend membuang token lalu memaksa
+    // login ulang percuma — dan itu menimpa semua pengguna sekaligus, karena
+    // yang gagal biasanya pengambilan kunci publik yang dipakai bersama.
+    const gangguanUpstream = !err.status || err.status >= 500 || err.status === 429;
+    return new HttpError(gangguanUpstream ? 503 : 401, err.message);
   }
   if (err instanceof JwtError) {
     // 'expired' dipisahkan supaya klien tahu harus me-refresh, bukan menyerah.
@@ -160,8 +165,15 @@ async function authMiddleware(req, res, next) {
       const claims = await verifyBearer(bearer);
       // Token refresh TIDAK boleh dipakai memanggil API. Tanpa pemeriksaan ini,
       // refresh token yang berumur 7 hari menjadi kredensial akses penuh.
-      if (claims.token_type && claims.token_type !== 'access') {
-        throw new HttpError(401, 'Butuh access token, bukan ' + claims.token_type);
+      // Dibandingkan KETAT. Bentuk sebelumnya (`claims.token_type && ...`)
+      // meloloskan token yang tidak membawa klaim ini sama sekali — padahal
+      // refresh token memikul `permissions` yang sama persis dengan access
+      // token, jadi yang lolos akan berlaku sebagai kredensial penuh 7 hari.
+      if (claims.token_type !== 'access') {
+        throw new HttpError(
+          401,
+          `Butuh access token, bukan ${claims.token_type || 'token tanpa jenis'}`
+        );
       }
       accountId = claims.sub;
       orgId = claims.org_id || null;
