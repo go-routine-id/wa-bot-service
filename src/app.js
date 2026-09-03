@@ -6,11 +6,15 @@ const config = require('../config');
 const apiRoutes = require('./routes');
 const authInfoRoutes = require('./routes/authInfoRoutes');
 const { corsMiddleware } = require('./middleware/cors');
+const { requestId } = require('./middleware/requestId');
 const { errorHandler } = require('./middleware/errorHandler');
 const { authMiddleware } = require('./middleware/auth');
 
 const app = express();
 
+// Paling awal: error di lapisan mana pun — termasuk penolakan autentikasi dan
+// body JSON yang cacat — tetap membawa id yang sama.
+app.use(requestId);
 app.use(express.json());
 // CORS configurable (env CORS_ORIGINS); kosong = same-origin. Dipasang sebelum route
 // supaya preflight OPTIONS lintas-origin ditangani (204) sebelum masuk routing.

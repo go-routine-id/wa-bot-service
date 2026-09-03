@@ -316,3 +316,41 @@ test('broadcast benar-benar bisa dibuat, dan hanya terlihat oleh organisasinya',
   const daftarB = punyaB.body.data.items || punyaB.body.data;
   assert.ok(!daftarB.some((b) => b.id === r.body.data.id), 'org-B tidak boleh melihatnya');
 });
+
+/* ========================== request id ========================== */
+
+test('setiap respons membawa X-Request-ID, dan error menyertakannya di body', async () => {
+  // 401 (belum masuk) — error pun harus bisa ditelusuri.
+  const res = await fetch(base + '/api/templates');
+  const id = res.headers.get('X-Request-ID');
+  assert.ok(id, 'header X-Request-ID wajib ada');
+  const body = await res.json();
+  assert.strictEqual(body.request_id, id, 'id di body harus sama dengan di header');
+
+  // Respons sukses juga membawa header yang sama.
+  const ok = await fetch(base + '/api/templates', { headers: bearer(token({ org_id: 'org-A' })) });
+  assert.ok(ok.headers.get('X-Request-ID'), 'respons sukses juga ber-id');
+});
+
+test('X-Request-ID dari pemanggil dipakai apa adanya', async () => {
+  // Supaya satu alur lintas service punya id yang sama.
+  const punyaKita = 'jejak-lintas-service-123';
+  const res = await fetch(base + '/api/templates', { headers: { 'X-Request-ID': punyaKita } });
+  assert.strictEqual(res.headers.get('X-Request-ID'), punyaKita);
+  assert.strictEqual((await res.json()).request_id, punyaKita);
+});
+
+test('id kiriman yang cacat diabaikan, diganti id baru', async () => {
+  // Id ikut tercetak di log dan dipantulkan ke klien, jadi bentuknya dibatasi.
+  //
+  // Newline sengaja TIDAK diuji di sini: fetch menolaknya di sisi klien
+  // (Headers.append melempar), jadi ia tak pernah sampai ke server lewat jalur
+  // ini. Penjagaan polanya tetap ada untuk pemanggil yang tidak lewat fetch.
+  const cacat = ['a'.repeat(500), 'ada spasi di sini', '<script>x</script>'];
+  for (const nilai of cacat) {
+    const res = await fetch(base + '/api/templates', { headers: { 'X-Request-ID': nilai } });
+    const dipakai = res.headers.get('X-Request-ID');
+    assert.notStrictEqual(dipakai, nilai, `"${nilai.slice(0, 20)}…" seharusnya ditolak`);
+    assert.match(dipakai, /^[0-9a-f-]{36}$/, 'diganti UUID baru');
+  }
+});
