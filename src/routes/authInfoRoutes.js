@@ -17,6 +17,29 @@ const router = express.Router();
  * izin yang dituntut. Keduanya sudah terlihat di pesan 401 dan di kode frontend,
  * jadi tidak ada rahasia yang bocor di sini.
  */
+/**
+ * @openapi
+ * /api/auth-info:
+ *   get:
+ *     tags: [Autentikasi]
+ *     summary: Ke mana frontend harus login
+ *     description: |
+ *       Satu-satunya endpoint di bawah /api yang TIDAK butuh kredensial —
+ *       frontend memanggilnya sebelum punya token, untuk tahu apakah
+ *       autentikasi menyala dan ke alamat account-service mana ia harus masuk.
+ *     security: []
+ *     responses:
+ *       200:
+ *         description: Konfigurasi autentikasi
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 enabled:            { type: boolean }
+ *                 accountServiceUrl:  { type: string }
+ *                 requiredPermission: { type: string, example: 'wa-bot:*' }
+ */
 router.get('/auth-info', (_req, res) => {
   res.json({
     data: {

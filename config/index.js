@@ -61,6 +61,10 @@ const config = {
   // penyaringan — persis jalur yang paling mudah lupa diuji.
   authFallbackOrgId: (process.env.AUTH_FALLBACK_ORG_ID || 'local').trim(),
 
+  // Kredensial halaman dokumentasi. Kosong = /docs tidak didaftarkan.
+  docsUser: process.env.SWAGGER_USER || '',
+  docsPassword: process.env.SWAGGER_PASSWORD || '',
+
   // Origin web yang diizinkan CORS (comma-separated); kosong = same-origin
   corsOrigins: (process.env.CORS_ORIGINS || '')
     .split(',')

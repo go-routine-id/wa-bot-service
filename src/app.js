@@ -27,6 +27,32 @@ const nosniff = (_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   next();
 };
+// Dokumentasi API di /docs, digembok basic auth.
+//
+// Tanpa SWAGGER_USER/SWAGGER_PASSWORD route-nya TIDAK didaftarkan sama sekali,
+// bukan sekadar dibiarkan terbuka: kalau service ini ter-deploy tanpa sengaja,
+// seluruh peta endpoint-nya tidak ikut terekspos.
+//
+// Di luar /api, jadi tidak tersentuh authMiddleware — Swagger UI belum bisa
+// mengirim Bearer token sebelum halamannya sendiri terbuka.
+if (config.docsUser && config.docsPassword) {
+  const swaggerUi = require('swagger-ui-express');
+  const { basicAuth } = require('./middleware/docsAuth');
+  const { spec } = require('./docs/openapi');
+  app.get('/docs/openapi.json', basicAuth(config.docsUser, config.docsPassword), (_req, res) =>
+    res.json(spec)
+  );
+  app.use(
+    '/docs',
+    basicAuth(config.docsUser, config.docsPassword),
+    swaggerUi.serve,
+    swaggerUi.setup(spec, { customSiteTitle: 'wa-bot-service API' })
+  );
+  console.log('[docs] aktif di /docs (basic auth)');
+} else {
+  console.log('[docs] nonaktif — SWAGGER_USER / SWAGGER_PASSWORD belum diisi');
+}
+
 app.use('/uploads/templates', nosniff, express.static(path.join(config.uploadDir, 'templates')));
 app.use('/uploads/broadcasts', nosniff, express.static(path.join(config.uploadDir, 'broadcasts')));
 // API di-polling frontend tiap 2.5 detik → larang caching kondisional: 304

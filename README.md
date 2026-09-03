@@ -12,6 +12,28 @@ Frontend web ada di repo terpisah: [**wa-bot-web**](https://github.com/go-routin
 - Saat membuat broadcast, kamu **memilih satu sesi sebagai pengirim**. Broadcast lama (sebelum fitur multi-sesi) tidak punya sesi → ditandai `—` di history.
 - Sesi disimpan di `AUTH_DIR/session-<sessionId>/` dan ter-persist di tabel `sessions`. Status runtime (QR, koneksi) hanya di memori.
 
+## Dokumentasi API (Swagger)
+
+Halaman docs ada di **`/docs`**, spec mentahnya di `/docs/openapi.json`.
+
+Keduanya digembok basic auth. **Tanpa `SWAGGER_USER` dan `SWAGGER_PASSWORD`,
+route-nya tidak didaftarkan sama sekali** — bukan sekadar dibiarkan terbuka —
+supaya service yang ter-deploy tanpa sengaja tidak ikut membocorkan peta
+endpoint-nya.
+
+```env
+SWAGGER_USER=docs
+SWAGGER_PASSWORD=ganti-ini
+```
+
+Isi dokumentasinya ditulis sebagai anotasi `@openapi` di berkas `src/routes/*.js`,
+jadi ia duduk tepat di sebelah route yang dijelaskannya. Tidak ada langkah
+generate: spec dirakit saat proses start.
+
+`test/docs.test.js` membaca berkas route lalu membandingkannya dengan spec —
+route yang ditambah tanpa anotasi membuat test gagal, bukan ditemukan pembaca
+dokumentasi belakangan.
+
 ## Quickstart (pemakaian pertama, ±5 menit)
 
 ```bash
