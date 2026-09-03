@@ -275,3 +275,44 @@ test('gangguan account-service dibalas 503, bukan 401', async () => {
   const pulih = await req('/api/templates', { headers: bearer(token({ org_id: 'org-A' })) });
   assert.strictEqual(pulih.status, 200);
 });
+
+/* ===================== membuat broadcast sungguhan ===================== */
+
+// Regresi: createCore menerima orgId tapi TIDAK meneruskannya ke
+// broadcastRepository.create, sehingga penjaga tenant melempar dan seluruh
+// pembuatan broadcast membalas 500 — rusak total sejak penyaringan organisasi
+// dipasang.
+//
+// Test B1 sebelumnya sengaja memakai templateId yang tidak ada supaya tidak
+// benar-benar mengirim pesan; akibatnya ia berhenti SEBELUM createCore dan
+// tidak pernah menyentuh jalur ini. Di sini broadcast dibuat betulan.
+// Aman: mode 'queue' hanya membangunkan worker antrean, dan worker itu
+// dijalankan server.js — yang tidak dipakai test ini.
+test('broadcast benar-benar bisa dibuat, dan hanya terlihat oleh organisasinya', async () => {
+  const sessionRepository = require('../src/repositories/sessionRepository');
+  sessionRepository.create({ id: 'sesi-kirim', name: 'Sesi Kirim', orgId: 'org-A' });
+
+  const r = await req('/api/broadcasts', {
+    method: 'POST',
+    headers: bearer(token({ org_id: 'org-A' })),
+    body: {
+      sessionId: 'sesi-kirim',
+      mode: 'queue',
+      ratePerMinute: 10,
+      messageText: 'halo',
+      recipients: '6281234567890',
+    },
+  });
+  assert.strictEqual(r.status, 201, JSON.stringify(r.body));
+  assert.ok(r.body.data && r.body.data.id, 'broadcast harus punya id');
+
+  // Terlihat oleh pemiliknya…
+  const punyaA = await req('/api/broadcasts', { headers: bearer(token({ org_id: 'org-A' })) });
+  const daftarA = punyaA.body.data.items || punyaA.body.data;
+  assert.ok(daftarA.some((b) => b.id === r.body.data.id), 'org-A melihat broadcast-nya');
+
+  // …dan TIDAK oleh organisasi lain.
+  const punyaB = await req('/api/broadcasts', { headers: bearer(token({ org_id: 'org-B' })) });
+  const daftarB = punyaB.body.data.items || punyaB.body.data;
+  assert.ok(!daftarB.some((b) => b.id === r.body.data.id), 'org-B tidak boleh melihatnya');
+});

@@ -27,6 +27,7 @@ function createCore({ templateId, sessionId, mode, ratePerMinute, delaySeconds =
     messageText,
     mediaPath: null,
     totalRecipients: recipientItems.length,
+    orgId,
   });
 
   // Copy media ke folder broadcast agar hapus template tidak merusak history
@@ -116,6 +117,7 @@ const broadcastService = {
       messageText,
       mediaPath,
       recipientItems,
+      orgId,
     });
   },
 
@@ -169,6 +171,7 @@ const broadcastService = {
         number: r.recipientNumber,
         status: 'pending',
       })),
+      orgId,
     });
 
     console.log(
