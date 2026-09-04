@@ -95,10 +95,10 @@ function toHttpError(err) {
  * untuk keluar dari organisasinya sendiri — tanpa aturan ini, satu service
  * account bisa membaca data seluruh tenant hanya dengan menambah satu header.
  */
-function resolveOrgId(tokenOrgId, req) {
+function resolveOrgId(tokenOrgId, organizationId) {
   if (tokenOrgId) return tokenOrgId;
 
-  const fromHeader = String(req.headers[ORG_HEADER] || '').trim();
+  const fromHeader = String(organizationId || '').trim();
   if (!fromHeader) {
     throw new HttpError(
       400,
@@ -110,101 +110,126 @@ function resolveOrgId(tokenOrgId, req) {
 }
 
 /**
- * Middleware utama. Menempelkan `req.auth`:
- *   { accountId, orgId, principalType, permissions, via }
+ * Verifikasi kredensial, lepas dari protokol apa pun.
+ *
+ * SENGAJA tidak menyentuh req/res: jalur HTTP dan gRPC memakai fungsi yang SAMA
+ * PERSIS, bukan salinan yang mirip. Dua salinan akan menyimpang seiring waktu —
+ * dan celah autentikasi yang hanya ada di satu pintu masuk justru yang paling
+ * sulit ditemukan, karena pintu lainnya tampak baik-baik saja.
+ *
+ * @param {object} kredensial
+ *   authorization  — isi header Authorization apa adanya
+ *   apiKey         — isi header X-API-Key
+ *   organizationId — isi header X-Organization-Id
+ * @returns {Promise<{accountId, orgId, principalType, permissions, via}>}
+ * @throws {HttpError} 400/401/403 — pemanggil menerjemahkannya ke protokolnya
  */
-async function authMiddleware(req, res, next) {
-  // Preflight tidak membawa header kustom — biarkan CORS yang menilainya.
-  if (req.method === 'OPTIONS') return next();
+async function authenticate(kredensial = {}) {
+  try {
+    return await verifikasi(kredensial);
+  } catch (err) {
+    // Dinormalisasi DI SINI, bukan di masing-masing adapter. Sebelumnya hanya
+    // adapter HTTP yang memanggil toHttpError, sehingga JwtError mentah lolos ke
+    // jalur gRPC dan berakhir sebagai INTERNAL — bukan UNAUTHENTICATED.
+    // Persis kelas masalah yang hendak dicegah dengan menyatukan fungsinya.
+    throw toHttpError(err);
+  }
+}
 
+async function verifikasi({ authorization = '', apiKey = '', organizationId = '' } = {}) {
   if (!accountService.enabled()) {
     // Autentikasi nonaktif → tetap sediakan konteks tenant. Lapisan di bawah
     // dengan begitu punya SATU jalur saja; tidak ada cabang khusus "tanpa
     // organisasi" yang bisa lolos dari penyaringan.
-    req.auth = {
+    return {
       accountId: null,
       orgId: config.authFallbackOrgId,
       principalType: 'anonymous',
       permissions: [],
       via: 'disabled',
     };
-    return next();
   }
 
-  const apiKey = req.get('X-API-Key');
-  const authorization = req.get('Authorization') || '';
-  const bearer = authorization.startsWith('Bearer ') ? authorization.slice(7).trim() : '';
+  const bearer = String(authorization || '').startsWith('Bearer ')
+    ? String(authorization).slice(7).trim()
+    : '';
+  const kunci = String(apiKey || '').trim();
 
   // account-service memilih diam-diam mengabaikan Bearer bila keduanya dikirim,
   // dan dokumentasinya sendiri mendaftarkan itu sebagai kesalahan tersering.
   // Kita menolak eksplisit — mewarisi jebakannya tidak membantu siapa pun.
-  if (apiKey && bearer) {
-    return next(
-      new HttpError(
-        400,
-        'Kirim salah satu saja: X-API-Key atau Authorization: Bearer, jangan keduanya'
-      )
+  if (kunci && bearer) {
+    throw new HttpError(
+      400,
+      'Kirim salah satu saja: X-API-Key atau Authorization: Bearer, jangan keduanya'
     );
   }
 
-  try {
-    let accountId;
-    let orgId;
-    let principalType;
-    let permissions;
-    let via;
+  let accountId;
+  let orgId;
+  let principalType;
+  let permissions;
+  let via;
 
-    if (apiKey) {
-      const who = await accountService.whoamiByApiKey(apiKey);
-      accountId = who.user_id;
-      orgId = who.org_id || null;
-      principalType = who.principal_type;
-      permissions = who.permissions;
-      via = 'api-key';
-    } else if (bearer) {
-      const claims = await verifyBearer(bearer);
-      // Token refresh TIDAK boleh dipakai memanggil API. Tanpa pemeriksaan ini,
-      // refresh token yang berumur 7 hari menjadi kredensial akses penuh.
-      // Dibandingkan KETAT. Bentuk sebelumnya (`claims.token_type && ...`)
-      // meloloskan token yang tidak membawa klaim ini sama sekali — padahal
-      // refresh token memikul `permissions` yang sama persis dengan access
-      // token, jadi yang lolos akan berlaku sebagai kredensial penuh 7 hari.
-      if (claims.token_type !== 'access') {
-        throw new HttpError(
-          401,
-          `Butuh access token, bukan ${claims.token_type || 'token tanpa jenis'}`
-        );
-      }
-      accountId = claims.sub;
-      orgId = claims.org_id || null;
-      principalType = claims.principal_type || 'human';
-      permissions = claims.permissions;
-      via = 'bearer';
-    } else {
+  if (kunci) {
+    const who = await accountService.whoamiByApiKey(kunci);
+    accountId = who.user_id;
+    orgId = who.org_id || null;
+    principalType = who.principal_type;
+    permissions = who.permissions;
+    via = 'api-key';
+  } else if (bearer) {
+    const claims = await verifyBearer(bearer);
+    // Dibandingkan KETAT. Bentuk sebelumnya (`claims.token_type && ...`)
+    // meloloskan token yang tidak membawa klaim ini sama sekali — padahal
+    // refresh token memikul `permissions` yang sama persis dengan access
+    // token, jadi yang lolos akan berlaku sebagai kredensial penuh 7 hari.
+    if (claims.token_type !== 'access') {
       throw new HttpError(
         401,
-        'Autentikasi tidak ada. Sertakan Authorization: Bearer atau X-API-Key'
+        `Butuh access token, bukan ${claims.token_type || 'token tanpa jenis'}`
       );
     }
+    accountId = claims.sub;
+    orgId = claims.org_id || null;
+    principalType = claims.principal_type || 'human';
+    permissions = claims.permissions;
+    via = 'bearer';
+  } else {
+    throw new HttpError(401, 'Autentikasi tidak ada. Sertakan Authorization: Bearer atau X-API-Key');
+  }
 
-    if (!hasPermission(permissions, config.authRequiredPermission)) {
-      throw new HttpError(
-        403,
-        `Akun ini tidak memegang izin ${config.authRequiredPermission}`
-      );
-    }
+  if (!hasPermission(permissions, config.authRequiredPermission)) {
+    throw new HttpError(403, `Akun ini tidak memegang izin ${config.authRequiredPermission}`);
+  }
 
-    req.auth = {
-      accountId,
-      orgId: resolveOrgId(orgId, req),
-      principalType,
-      permissions,
-      via,
-    };
+  return {
+    accountId,
+    orgId: resolveOrgId(orgId, organizationId),
+    principalType,
+    permissions,
+    via,
+  };
+}
+
+/**
+ * Adapter HTTP. Menempelkan `req.auth`:
+ *   { accountId, orgId, principalType, permissions, via }
+ */
+async function authMiddleware(req, res, next) {
+  // Preflight tidak membawa header kustom — biarkan CORS yang menilainya.
+  if (req.method === 'OPTIONS') return next();
+
+  try {
+    req.auth = await authenticate({
+      authorization: req.get('Authorization') || '',
+      apiKey: req.get('X-API-Key') || '',
+      organizationId: req.get('X-Organization-Id') || '',
+    });
     return next();
   } catch (err) {
-    return next(toHttpError(err));
+    return next(err); // authenticate() sudah mengembalikan HttpError
   }
 }
 
-module.exports = { authMiddleware, hasPermission, resolveOrgId, ORG_HEADER };
+module.exports = { authenticate, authMiddleware, toHttpError, hasPermission, resolveOrgId, ORG_HEADER };

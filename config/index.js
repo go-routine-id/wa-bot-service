@@ -94,6 +94,15 @@ const config = {
   // penyaringan — persis jalur yang paling mudah lupa diuji.
   authFallbackOrgId: (process.env.AUTH_FALLBACK_ORG_ID || 'local').trim(),
 
+  // Jalur gRPC (server-to-server). Kosong = server gRPC tidak dijalankan.
+  //
+  // Sengaja BUKAN 50051/50052: keduanya port gRPC yang lazim dipindai, dan
+  // 50051 sudah dipakai account-service di mesin ini.
+  grpcPort: angka('GRPC_PORT', 0, { min: 0, max: 65535, bulat: true }),
+  // Bawaan mengikat ke loopback saja — jalur ini untuk pemanggil di mesin/jaringan
+  // yang sama, bukan untuk dibuka ke internet tanpa disadari.
+  grpcHost: process.env.GRPC_HOST || '127.0.0.1',
+
   // Kredensial halaman dokumentasi. Kosong = /docs tidak didaftarkan.
   docsUser: process.env.SWAGGER_USER || '',
   docsPassword: process.env.SWAGGER_PASSWORD || '',

@@ -1,6 +1,7 @@
 'use strict';
 
 const config = require('../config');
+const { mulaiGrpc } = require('./grpc/server');
 
 // Init DB + migrasi (wajib sebelum repository/service dipakai)
 const { getDb } = require('../config/database');
@@ -20,6 +21,10 @@ async function main() {
   // startAll() harus jalan DULU: runner menunggu koneksi per-sesi saat recovery.
   broadcastService.recoverInProgress();
   broadcastRunner.startQueueWorker();
+
+  // Jalur gRPC (server-to-server). Satu proses dengan HTTP — lihat komentar di
+  // src/grpc/server.js soal state runner yang hidup di memori.
+  grpcServer = await mulaiGrpc();
 
   app.listen(config.port, () => {
     console.log(`[server] berjalan di http://localhost:${config.port}`);
@@ -64,12 +69,17 @@ process.on('unhandledRejection', (reason) => {
 
 // Graceful shutdown: destroy semua client whatsapp-web.js sebelum exit, supaya
 // tidak ada proses Chromium menggantung / sesi setengah terbuka saat restart.
+let grpcServer = null;
 let shuttingDown = false;
 async function shutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[shutdown] ${signal} — menutup WhatsApp client…`);
   try {
+    // gRPC ditutup DULU: hentikan permintaan baru masuk sebelum sesi WhatsApp
+    // dibongkar, supaya tidak ada handler yang berjalan di atas klien yang
+    // sedang dimatikan.
+    if (grpcServer) grpcServer.forceShutdown();
     await whatsappService.destroyAll();
   } catch (err) {
     console.error('[shutdown] error destroy:', err);

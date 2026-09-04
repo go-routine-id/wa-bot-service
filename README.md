@@ -12,6 +12,45 @@ Frontend web ada di repo terpisah: [**wa-bot-web**](https://github.com/go-routin
 - Saat membuat broadcast, kamu **memilih satu sesi sebagai pengirim**. Broadcast lama (sebelum fitur multi-sesi) tidak punya sesi → ditandai `—` di history.
 - Sesi disimpan di `AUTH_DIR/session-<sessionId>/` dan ter-persist di tabel `sessions`. Status runtime (QR, koneksi) hanya di memori.
 
+## Jalur gRPC (server-to-server)
+
+Kontraknya di `proto/wabot/v1/broadcast.proto`, dimuat saat runtime — tidak ada
+langkah generate yang bisa terlupakan.
+
+```env
+GRPC_PORT=7431          # kosongkan untuk mematikan; server tidak dijalankan sama sekali
+GRPC_HOST=127.0.0.1     # bawaan loopback saja
+```
+
+Port sengaja **bukan** 50051/50052: keduanya port gRPC yang lazim dipindai, dan
+50051 sudah dipakai account-service.
+
+**Autentikasi lewat metadata**, memakai fungsi verifikasi yang sama persis
+dengan jalur HTTP — bukan salinan:
+
+| Metadata | Keterangan |
+|---|---|
+| `authorization: Bearer <token>` | access token dari account-service |
+| `x-api-key` | alternatif; **jangan** bersamaan dengan Bearer |
+| `x-organization-id` | hanya untuk kredensial tanpa organisasi (system account) |
+| `x-request-id` | opsional; dipantulkan balik dan ikut tercetak di log |
+
+Data milik organisasi lain dibalas `NOT_FOUND`, bukan `PERMISSION_DENIED` —
+membedakan keduanya sudah membocorkan keberadaan datanya.
+
+**`WatchBroadcast`** mengalirkan perubahan status selama broadcast berjalan, dan
+ditutup server saat status akhir tercapai. Peristiwa yang sudah lewat sebelum
+stream dibuka tidak diputar ulang: panggil `GetBroadcast` dulu untuk keadaan
+awal, lalu ikuti alirannya.
+
+Media tidak diekspos di gRPC — unggah lewat `POST /api/media`, lalu kirim
+`media_path` yang dikembalikannya.
+
+**Wajib satu proses dengan server HTTP.** Runner menyimpan flag pembatalan dan
+whatsappService menyimpan registry sesi di memori; kalau dipisah jadi proses
+sendiri, pembatalan broadcast dan status sesi berhenti bekerja diam-diam — tanpa
+error, hanya perintah yang tidak berefek.
+
 ## Dokumentasi API (Swagger)
 
 Halaman docs ada di **`/docs`**, spec mentahnya di `/docs/openapi.json`.

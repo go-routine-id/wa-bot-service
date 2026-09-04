@@ -1,0 +1,168 @@
+syntax = "proto3";
+
+package wabot.v1;
+
+// Jalur gRPC wa-bot-service — untuk pemanggil server-to-server.
+//
+// AUTENTIKASI (metadata, bukan field pesan):
+//   authorization: "Bearer <access token>"   — dari account-service
+//   x-api-key:     "<kunci service account>" — alternatif; JANGAN bersamaan
+//   x-organization-id: "<uuid>"              — HANYA untuk kredensial yang tidak
+//                                              terikat organisasi (system account)
+//   x-request-id:  "<id>"                    — opsional; dipantulkan balik dan
+//                                              ikut tercetak di log
+//
+// Seluruh method terikat organisasi. Data milik organisasi lain tidak terlihat,
+// dan menyebut id-nya membalas NOT_FOUND — bukan PERMISSION_DENIED, karena
+// membedakan keduanya sudah membocorkan keberadaan data itu.
+//
+// Media TIDAK diekspos di sini. Unggah lewat POST /api/media, lalu kirimkan
+// media_path yang dikembalikannya.
+
+service BroadcastService {
+  rpc CreateBroadcast(CreateBroadcastRequest) returns (Broadcast);
+  rpc ListBroadcasts(ListBroadcastsRequest) returns (ListBroadcastsResponse);
+  rpc GetBroadcast(GetBroadcastRequest) returns (BroadcastDetail);
+  rpc CancelBroadcast(CancelBroadcastRequest) returns (Broadcast);
+  rpc RetryBroadcast(RetryBroadcastRequest) returns (Broadcast);
+
+  // Alirkan perubahan status selama broadcast berjalan.
+  //
+  // Stream ditutup server saat broadcast mencapai status akhir. Peristiwa yang
+  // sudah lewat sebelum stream dibuka TIDAK diputar ulang — panggil
+  // GetBroadcast lebih dulu untuk keadaan awal, lalu ikuti aliran ini.
+  rpc WatchBroadcast(WatchBroadcastRequest) returns (stream BroadcastEvent);
+}
+
+// Baca-saja. Membuat broadcast menuntut session_id yang sah milik organisasi
+// pemanggil; tanpa ini pemanggil tidak punya cara mengetahuinya.
+service SessionService {
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+}
+
+/* ----------------------------- pesan ----------------------------- */
+
+enum BroadcastMode {
+  BROADCAST_MODE_UNSPECIFIED = 0;
+  BROADCAST_MODE_QUEUE = 1;     // antre, satu per satu
+  BROADCAST_MODE_PARALLEL = 2;  // jalan mandiri, risiko ban lebih tinggi
+}
+
+enum BroadcastStatus {
+  BROADCAST_STATUS_UNSPECIFIED = 0;
+  BROADCAST_STATUS_PENDING = 1;
+  BROADCAST_STATUS_RUNNING = 2;
+  BROADCAST_STATUS_COMPLETED = 3;
+  BROADCAST_STATUS_FAILED = 4;
+  BROADCAST_STATUS_CANCELLED = 5;
+}
+
+enum RecipientStatus {
+  RECIPIENT_STATUS_UNSPECIFIED = 0;
+  RECIPIENT_STATUS_PENDING = 1;
+  RECIPIENT_STATUS_SENDING = 2;
+  RECIPIENT_STATUS_SENT = 3;
+  RECIPIENT_STATUS_FAILED = 4;
+  RECIPIENT_STATUS_SKIPPED = 5;
+}
+
+message CreateBroadcastRequest {
+  // Sesi pengirim. Wajib, dan wajib milik organisasi pemanggil — sesi
+  // organisasi lain dibalas INVALID_ARGUMENT meski id-nya benar.
+  string session_id = 1;
+  BroadcastMode mode = 2;
+
+  // Dipisah koma atau baris baru. Nomor berformat salah tidak membatalkan
+  // seluruh broadcast; ia tercatat sebagai penerima berstatus FAILED agar
+  // terlihat di riwayat.
+  string recipients = 3;
+
+  // Pilih SALAH SATU: template_id atau message_text.
+  oneof pesan {
+    int64 template_id = 4;
+    string message_text = 5;
+  }
+  string media_path = 6; // dari POST /api/media
+
+  // Pilih SALAH SATU. Makin rapat, makin besar risiko nomor diblokir WhatsApp.
+  oneof kecepatan {
+    double delay_seconds = 7;
+    int32 rate_per_minute = 8;
+  }
+}
+
+message ListBroadcastsRequest {
+  int32 limit = 1;  // 0 = bawaan 50; plafon 500 ditegakkan server
+  int32 offset = 2;
+}
+
+message ListBroadcastsResponse {
+  repeated Broadcast broadcasts = 1;
+}
+
+message GetBroadcastRequest { int64 id = 1; }
+message CancelBroadcastRequest { int64 id = 1; }
+
+message RetryBroadcastRequest {
+  int64 id = 1;
+  // Kosongkan untuk memakai sesi asal. Broadcast lama tanpa sesi WAJIB mengisi.
+  string session_id = 2;
+}
+
+message WatchBroadcastRequest { int64 id = 1; }
+
+message Broadcast {
+  int64 id = 1;
+  string session_id = 2;
+  string session_name = 3;
+  BroadcastMode mode = 4;
+  BroadcastStatus status = 5;
+  int64 template_id = 6;
+  string message_text = 7;
+  string media_path = 8;
+  int32 total_recipients = 9;
+  int32 sent_count = 10;
+  int32 failed_count = 11;
+  string error = 12;
+  string created_at = 13;
+  string started_at = 14;
+  string finished_at = 15;
+}
+
+message Recipient {
+  int64 id = 1;
+  string number = 2;
+  RecipientStatus status = 3;
+  string error = 4;
+  string sent_at = 5;
+}
+
+message BroadcastDetail {
+  Broadcast broadcast = 1;
+  repeated Recipient recipients = 2;
+}
+
+message BroadcastEvent {
+  int64 broadcast_id = 1;
+  oneof event {
+    Recipient recipient_changed = 2;
+    Broadcast broadcast_changed = 3;
+  }
+}
+
+message ListSessionsRequest {}
+
+message Session {
+  string id = 1;
+  string name = 2;
+  // Status runtime apa adanya dari WhatsApp: connected, connecting, qr,
+  // qr_expired, disconnected, auth_failure, uninitialized.
+  string status = 3;
+  bool connected = 4;
+  string phone_number = 5;
+  string display_name = 6;
+}
+
+message ListSessionsResponse {
+  repeated Session sessions = 1;
+}

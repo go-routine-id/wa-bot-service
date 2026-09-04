@@ -2,6 +2,7 @@
 
 const { getDb } = require('../../config/database');
 const { requireOrg } = require('./tenant');
+const { bus, PERISTIWA } = require('../utils/eventBus');
 const { INVALID_NUMBER_ERROR } = require('../models/broadcast');
 
 const db = getDb();
@@ -96,6 +97,8 @@ const broadcastRepository = {
     db.prepare(
       `UPDATE broadcasts SET status = 'running', started_at = datetime('now') WHERE id = ?`
     ).run(id);
+    const baris = this.findByIdUnscoped(id);
+    if (baris) bus.emit(PERISTIWA.BROADCAST_BERUBAH, baris);
   },
 
   updateCounts(id, sentCount, failedCount) {
@@ -110,6 +113,8 @@ const broadcastRepository = {
        SET status = 'completed', sent_count = ?, failed_count = ?, finished_at = datetime('now')
        WHERE id = ?`
     ).run(sentCount, failedCount, id);
+    const baris = this.findByIdUnscoped(id);
+    if (baris) bus.emit(PERISTIWA.BROADCAST_BERUBAH, baris);
   },
 
   markFailed(id, error, sentCount, failedCount) {
@@ -118,6 +123,8 @@ const broadcastRepository = {
        SET status = 'failed', error = ?, sent_count = ?, failed_count = ?, finished_at = datetime('now')
        WHERE id = ?`
     ).run(error, sentCount, failedCount, id);
+    const baris = this.findByIdUnscoped(id);
+    if (baris) bus.emit(PERISTIWA.BROADCAST_BERUBAH, baris);
   },
 
   markCancelled(id, sentCount, failedCount) {
@@ -126,6 +133,8 @@ const broadcastRepository = {
        SET status = 'cancelled', sent_count = ?, failed_count = ?, finished_at = datetime('now')
        WHERE id = ?`
     ).run(sentCount, failedCount, id);
+    const baris = this.findByIdUnscoped(id);
+    if (baris) bus.emit(PERISTIWA.BROADCAST_BERUBAH, baris);
   },
 
   /** Broadcast mode queue berikutnya yang belum diproses (FIFO by id). */
@@ -204,6 +213,8 @@ const broadcastRepository = {
        SET status = 'pending', started_at = NULL, finished_at = NULL, error = NULL
        WHERE id = ?`
     ).run(id);
+    const baris = this.findByIdUnscoped(id);
+    if (baris) bus.emit(PERISTIWA.BROADCAST_BERUBAH, baris);
   },
 
   /** Cek apakah sebuah media_path masih direferensikan broadcast manapun. */

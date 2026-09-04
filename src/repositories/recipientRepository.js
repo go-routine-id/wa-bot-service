@@ -1,6 +1,7 @@
 'use strict';
 
 const { getDb } = require('../../config/database');
+const { bus, PERISTIWA } = require('../utils/eventBus');
 
 const db = getDb();
 
@@ -60,6 +61,12 @@ const recipientRepository = {
     db.prepare(
       `UPDATE broadcast_recipients SET status = ?, error = ?, sent_at = ? WHERE id = ?`
     ).run(status, error, sentAt, id);
+    // Baris dibaca ulang supaya penyimak menerima keadaan lengkapnya — termasuk
+    // broadcast_id, yang tidak diketahui dari argumen. Satu SELECT tambahan per
+    // perubahan status; pada laju kirim yang wajar (puluhan detik antar pesan)
+    // biayanya tidak berarti.
+    const baris = this.findById(id);
+    if (baris) bus.emit(PERISTIWA.PENERIMA_BERUBAH, baris);
   },
 
   /** Update massal status berdasarkan status asal (untuk cancel / recovery). */
@@ -73,6 +80,13 @@ const recipientRepository = {
          WHERE broadcast_id = ? AND status IN (${placeholders})`
       )
       .run(toStatus, error, broadcastId, ...fromStatuses);
+    if (info.changes > 0) {
+      // Perubahan massal (batal, pemulihan, sesi dihapus) juga harus terlihat
+      // penyimak. Dipancarkan per baris agar bentuk peristiwanya seragam.
+      for (const baris of this.findByBroadcastId(broadcastId)) {
+        bus.emit(PERISTIWA.PENERIMA_BERUBAH, baris);
+      }
+    }
     return info.changes;
   },
 };
