@@ -147,6 +147,17 @@ const mediaService = {
    * Tujuannya: penghapusan template di masa depan tidak merusak history broadcast.
    */
   copyToBroadcast(broadcastId, relPath) {
+    // Penjaga ada DI SINI, bukan disandarkan pada sopan-santun pemanggil.
+    //
+    // Sebelumnya fungsi ini tidak memeriksa apa pun; yang menahannya hanyalah
+    // kebetulan bahwa satu-satunya pemanggil selalu memanggil exists() lebih
+    // dulu — dan exists() yang dijaga. Pemanggil baru yang lupa urutan itu
+    // membuka rantai penuh: berkas mana pun di disk tersalin ke
+    // uploads/broadcasts/<id>/, lalu terkirim sebagai lampiran WhatsApp DAN
+    // tersaji publik tanpa autentikasi di /uploads/broadcasts/.
+    if (!isInsideUploads(relPath)) {
+      throw new Error(`[media] path di luar folder uploads ditolak: ${relPath}`);
+    }
     const srcAbs = path.resolve(uploadRoot, relPath);
     const destRel = path.join('broadcasts', String(broadcastId), path.basename(relPath));
     const destAbs = path.join(uploadRoot, destRel);

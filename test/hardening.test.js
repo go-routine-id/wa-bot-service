@@ -150,3 +150,31 @@ test('recalcCounts tidak melempar — cancel() sempat 500 total karenanya', () =
   assert.strictEqual(hasil.status, 'cancelled');
   assert.doesNotThrow(() => bRepo.recalcCounts(b.id));
 });
+
+/* ============ H: copyToBroadcast menjaga path-nya sendiri ============ */
+
+test('copyToBroadcast menolak path di luar folder uploads', () => {
+  // Penjaganya dulu ada di PEMANGGIL, bukan di fungsinya: yang menahan hanyalah
+  // kebetulan bahwa satu-satunya pemanggil memanggil exists() lebih dulu.
+  // Pemanggil baru yang lupa urutan itu membuka rantai penuh — berkas mana pun
+  // di disk tersalin ke uploads/broadcasts/, lalu terkirim sebagai lampiran
+  // WhatsApp DAN tersaji publik tanpa autentikasi di /uploads/broadcasts/.
+  const mediaService = require('../src/services/mediaService');
+
+  for (const jahat of ['../../../../etc/hosts', '../uploads-jahat/x.png', '/etc/hosts']) {
+    assert.throws(
+      () => mediaService.copyToBroadcast(999, jahat),
+      /di luar folder uploads/,
+      `"${jahat}" seharusnya ditolak`
+    );
+  }
+
+  // Path yang sah lolos penjaga ini dan gagal di tahap berikutnya (berkasnya
+  // memang tidak ada) — bukan ditolak penjaga. Bedanya penting: kalau penjaga
+  // ikut menolak path yang sah, fitur medianya mati diam-diam.
+  assert.throws(
+    () => mediaService.copyToBroadcast(999, 'templates/tidak-ada.png'),
+    (err) => err.code === 'ENOENT',
+    'path sah seharusnya lolos penjaga, bukan ditolak'
+  );
+});
