@@ -3,6 +3,22 @@
 const { HttpError } = require('../utils/httpError');
 const { validateBroadcastCreate, INVALID_NUMBER_ERROR } = require('../models/broadcast');
 const { parseTargets } = require('../utils/phone');
+
+/** Batas baris per halaman. Dipakai semua pintu masuk, bukan hanya HTTP. */
+const MAX_PAGE_SIZE = 500;
+const DEFAULT_PAGE_SIZE = 50;
+
+function clampLimit(nilai) {
+  const n = Number.parseInt(nilai, 10);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_PAGE_SIZE;
+  return Math.min(n, MAX_PAGE_SIZE);
+}
+
+function clampOffset(nilai) {
+  const n = Number.parseInt(nilai, 10);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return n;
+}
 const templateRepository = require('../repositories/templateRepository');
 const broadcastRepository = require('../repositories/broadcastRepository');
 const recipientRepository = require('../repositories/recipientRepository');
@@ -245,8 +261,22 @@ const broadcastService = {
     return broadcastService.getDetail(id);
   },
 
+  /**
+   * Daftar broadcast milik satu organisasi.
+   *
+   * Batasnya ditegakkan DI SINI, bukan hanya di controller HTTP. Sebelumnya
+   * `parsePagination` di controller adalah satu-satunya penjaga, dan service
+   * meneruskan limit apa adanya ke `LIMIT ?` — sementara di SQLite `undefined`
+   * maupun angka negatif sama-sama berarti TANPA BATAS. Pemanggil kedua mana pun
+   * (gRPC, skrip, job) yang lupa meniru penjaga itu langsung menarik seluruh
+   * tabel, dan tidak ada yang menegurnya.
+   */
   list({ limit, offset } = {}, orgId) {
-    return broadcastRepository.list({ limit, offset, orgId });
+    return broadcastRepository.list({
+      limit: clampLimit(limit),
+      offset: clampOffset(offset),
+      orgId,
+    });
   },
 
   getDetail(id, orgId) {
@@ -303,7 +333,31 @@ const broadcastService = {
     for (const b of recoverable) {
       if (b.status === 'running') {
         broadcastRepository.resetToPending(b.id);
-        recipientRepository.bulkUpdateStatus(b.id, ['sending'], 'pending');
+
+        // Penerima yang tertinggal berstatus 'sending' TIDAK dikembalikan ke
+        // 'pending'. Statusnya ambigu: proses berhenti di antara pesan dikirim
+        // dan hasilnya dicatat, jadi pesan itu bisa saja SUDAH sampai.
+        // Mengirim ulang berarti pelanggan menerima pesan yang sama dua kali,
+        // dan pengiriman ganda juga menambah risiko nomor diblokir.
+        //
+        // Ini menyamakan perilaku dengan kebijakan yang sudah dianut di dalam
+        // satu run: classifySendError() sengaja TIDAK mencoba ulang kegagalan
+        // yang statusnya tidak pasti, dengan alasan yang sama. Sebelumnya
+        // pemulihan boot justru melanggar kebijakan itu.
+        //
+        // Ditandai 'failed' dengan keterangan jujur, sehingga nomornya masuk
+        // daftar "kirim ulang yang gagal" dan penggunalah yang memutuskan —
+        // bukan diputuskan diam-diam oleh proses yang baru bangun.
+        recipientRepository.bulkUpdateStatus(
+          b.id,
+          ['sending'],
+          'failed',
+          'Aplikasi berhenti saat pesan ini sedang dikirim — status tidak pasti, mungkin sudah terkirim'
+        );
+        // Hitungan di baris broadcast disinkronkan dengan baris recipient yang
+        // nyata: tanpa ini, penerima yang baru ditandai gagal di atas tidak ikut
+        // terhitung dan tally akhirnya meleset.
+        broadcastRepository.recalcCounts(b.id);
       }
       if (b.mode === 'parallel') {
         broadcastRunner.spawnParallel(b.id);

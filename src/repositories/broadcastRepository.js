@@ -184,7 +184,12 @@ const broadcastRepository = {
          failed_count     = (SELECT COUNT(*) FROM broadcast_recipients WHERE broadcast_id = ? AND status = 'failed')
        WHERE id = ?`
     ).run(id, id, id, id);
-    return this.findById(id);
+    // TIDAK mengembalikan baris hasilnya. Versi sebelumnya memanggil
+    // findById(id) tanpa orgId, dan sejak penyaringan tenant dipasang, panggilan
+    // itu SELALU melempar — membuat setiap pemanggil recalcCounts ikut gagal,
+    // termasuk cancel() yang jadi 500 total. Keempat pemanggilnya memakai fungsi
+    // ini sebagai pernyataan dan mengambil ulang barisnya sendiri dengan orgId
+    // masing-masing, jadi nilai kembalian itu memang tidak pernah dibutuhkan.
   },
 
   /** Set media_path (dipakai setelah media di-copy ke folder broadcast). */
