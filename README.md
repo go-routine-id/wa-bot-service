@@ -12,6 +12,35 @@ Frontend web ada di repo terpisah: [**wa-bot-web**](https://github.com/go-routin
 - Saat membuat broadcast, kamu **memilih satu sesi sebagai pengirim**. Broadcast lama (sebelum fitur multi-sesi) tidak punya sesi → ditandai `—` di history.
 - Sesi disimpan di `AUTH_DIR/session-<sessionId>/` dan ter-persist di tabel `sessions`. Status runtime (QR, koneksi) hanya di memori.
 
+## Format nomor tujuan
+
+Nomor dinormalisasi ke format internasional tanpa `+` sebelum dikirim.
+
+| Ditulis | Jadi |
+|---|---|
+| `6285337949499` | `6285337949499` |
+| `085337949499` | `6285337949499` |
+| `0853 3794 9499` | `6285337949499` |
+| `+62 853-3794-9499` | `6285337949499` |
+| `60123456789` | `60123456789` (dibiarkan) |
+
+Awalan `0` diganti `DEFAULT_COUNTRY_CODE` (bawaan `62`). Kosongkan untuk
+mematikan konversi — perlu bila satu deployment melayani banyak negara, karena
+di situ `0` di depan tidak bisa diartikan sepihak.
+
+Nomor yang **tidak** diawali `0` dibiarkan apa adanya, termasuk nomor negara lain
+yang sudah lengkap. Konsekuensinya: nomor lokal yang kehilangan angka nolnya
+(mis. `85337949499`, lazim terjadi karena Excel membuang nol di depan) TIDAK
+dikenali sebagai nomor Indonesia — menebaknya berisiko keliru dengan kode negara
+lain yang juga diawali 8.
+
+**Pemisah antar nomor: koma, titik koma, baris baru — bukan spasi.** Spasi lebih
+sering memisah bagian di dalam satu nomor. Dua nomor yang hanya dipisah spasi
+akan menyatu dan ditandai tidak valid, bukan dikirim.
+
+Nilai yang sama harus diset di frontend (`WA_DEFAULT_COUNTRY_CODE` di `config.js`);
+kalau berbeda, jumlah tujuan di layar tidak cocok dengan yang benar-benar dikirim.
+
 ## Jalur gRPC (server-to-server)
 
 Kontraknya di `proto/wabot/v1/broadcast.proto`, dimuat saat runtime — tidak ada

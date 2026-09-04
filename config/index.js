@@ -94,6 +94,14 @@ const config = {
   // penyaringan — persis jalur yang paling mudah lupa diuji.
   authFallbackOrgId: (process.env.AUTH_FALLBACK_ORG_ID || 'local').trim(),
 
+  // Kode negara untuk nomor yang ditulis dalam format lokal (diawali '0').
+  //
+  // Ini ASUMSI BISNIS, bukan aturan teknis — karena itu ia konfigurasi, bukan
+  // angka yang ditanam di kode. Deployment untuk negara lain tinggal mengubahnya;
+  // dikosongkan berarti tidak ada konversi sama sekali (untuk pemakaian
+  // lintas negara, di mana '0' di depan tidak bisa diartikan sepihak).
+  defaultCountryCode: (process.env.DEFAULT_COUNTRY_CODE ?? '62').replace(/\D/g, ''),
+
   // Jalur gRPC (server-to-server). Kosong = server gRPC tidak dijalankan.
   //
   // Sengaja BUKAN 50051/50052: keduanya port gRPC yang lazim dipindai, dan

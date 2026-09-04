@@ -1,11 +1,31 @@
 'use strict';
 
+const config = require('../../config');
+
 /**
- * Normalisasi nomor WhatsApp: buang semua karakter non-digit.
- * Format hasil: digit saja (international format, tanpa '+'), mis. 6281234567890.
+ * Normalisasi nomor WhatsApp ke format internasional tanpa '+'.
+ *
+ * Dua langkah:
+ *   1. Buang semua karakter non-digit — menangani '+62 853-3794-9499',
+ *      '(0853) 3794 9499', dan sejenisnya.
+ *   2. Awalan '0' (notasi lokal) diganti kode negara. Tanpa ini '085337949499'
+ *      lolos validasi apa adanya lalu dikirim sebagai '085337949499@c.us' —
+ *      WhatsApp tidak menemukannya, dan pengguna tidak pernah diberi tahu
+ *      karena nomornya terlihat "valid".
+ *
+ * Kode negaranya dari config, bukan ditanam di sini: mengubah '0' jadi '62'
+ * mengandaikan nomornya Indonesia, dan asumsi itu salah begitu ada nomor
+ * Malaysia atau Singapura. Config kosong = tidak ada konversi.
+ *
+ * Nomor yang TIDAK diawali '0' dibiarkan apa adanya — termasuk nomor negara
+ * lain yang sudah lengkap ('60123456789'). Menebak-nebak di situ lebih
+ * berbahaya daripada membiarkannya.
  */
 function normalizePhone(raw) {
-  return String(raw ?? '').replace(/\D/g, '');
+  const digit = String(raw ?? '').replace(/\D/g, '');
+  const kode = config.defaultCountryCode;
+  if (!kode || !digit.startsWith('0')) return digit;
+  return kode + digit.slice(1);
 }
 
 /** Panjang maksimal label entri tak valid yang disimpan (nomor asli maks 15 digit). */
@@ -33,7 +53,18 @@ function parseTargets(raw) {
   const invalid = [];
   const seen = new Set();
   const parts = String(raw ?? '')
-    .split(/[,;\s]+/)
+    // Dipisah HANYA oleh koma, titik koma, dan baris baru — BUKAN spasi.
+    //
+    // Spasi jauh lebih sering menjadi pemisah DI DALAM satu nomor
+    // ('0812 3456 7890', '+62 812 3456 7890') daripada antar nomor, dan
+    // memecah di situ mencabik nomor jadi potongan. Yang paling berbahaya:
+    // sebagian potongan lolos validasi sebagai "nomor" — '853-3794-9499'
+    // menjadi 85337949499 yang terlihat sah lalu benar-benar dikirimi pesan.
+    //
+    // Dua nomor yang hanya dipisah spasi kini menyatu jadi satu entri panjang
+    // dan ditandai tidak valid. Itu pertukaran yang disengaja: terlihat salah
+    // lebih baik daripada diam-diam mengirim ke nomor yang keliru.
+    .split(/[,;\n\r]+/)
     .map((p) => p.trim())
     .filter((p) => p.length > 0);
 
