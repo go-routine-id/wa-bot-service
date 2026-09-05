@@ -34,9 +34,23 @@ const token = (over = {}) =>
     token_type: 'access', iss: 'account-service', exp: now() + 900, ...over,
   });
 
+// Kunci API → payload whoami. Kunci yang tak terdaftar dibalas 401 oleh stub.
+const stubWhoami = new Map();
+
 function stubAccountService() {
   return new Promise((resolve) => {
     const srv = http.createServer((req, res) => {
+      if (req.url.startsWith('/api/v1/auth/whoami')) {
+        const data = stubWhoami.get(req.headers['x-api-key']);
+        res.setHeader('Content-Type', 'application/json');
+        if (!data) {
+          res.statusCode = 401;
+          res.end(JSON.stringify({ success: false, message: 'API key tidak valid' }));
+          return;
+        }
+        res.end(JSON.stringify({ success: true, data }));
+        return;
+      }
       if (req.url.startsWith('/api/v1/auth/public-key')) {
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ success: true, data: { key_id: 'default', algorithm: 'RS256', public_key: PEM } }));
@@ -137,6 +151,39 @@ test('MODEL 3 — system account WAJIB menyebut organisasi lewat metadata', asyn
   const dengan = await panggil(klienSs, 'ListSessions', {},
     meta({ token: sys, extra: { 'x-organization-id': 'org-A' } }));
   assert.deepStrictEqual(dengan.ok.sessions.map((s) => s.id), ['sesi-a']);
+});
+
+test('MODEL 2b — X-API-Key via metadata diterima, org dari whoami', async () => {
+  stubWhoami.set('kunci-a', {
+    user_id: 'svc-a',
+    org_id: 'org-A',
+    principal_type: 'service',
+    permissions: ['wa-bot:*'],
+    session_id: null,
+    expires_at: null,
+  });
+  const r = await panggil(klienSs, 'ListSessions', {}, meta({ extra: { 'x-api-key': 'kunci-a' } }));
+  assert.ok(r.ok, r.err && r.err.details);
+  assert.deepStrictEqual(r.ok.sessions.map((s) => s.id), ['sesi-a']);
+});
+
+test('metadata organisasi tidak menggeser org milik X-API-Key', async () => {
+  const r = await panggil(klienSs, 'ListSessions', {},
+    meta({ extra: { 'x-api-key': 'kunci-a', 'x-organization-id': 'org-B' } }));
+  assert.deepStrictEqual(r.ok.sessions.map((s) => s.id), ['sesi-a']);
+});
+
+test('X-API-Key tanpa izin wa-bot:* → PERMISSION_DENIED', async () => {
+  stubWhoami.set('kunci-tipis', {
+    user_id: 'svc-tipis',
+    org_id: 'org-A',
+    principal_type: 'service',
+    permissions: ['email:*'],
+    session_id: null,
+    expires_at: null,
+  });
+  const r = await panggil(klienBc, 'ListBroadcasts', {}, meta({ extra: { 'x-api-key': 'kunci-tipis' } }));
+  assert.strictEqual(r.err.code, grpc.status.PERMISSION_DENIED);
 });
 
 /* ===================== penolakan ===================== */

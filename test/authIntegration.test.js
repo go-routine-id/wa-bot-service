@@ -4,8 +4,8 @@
  * Uji integrasi: ketiga model identitas account-service menembus seluruh
  * tumpukan HTTP wa-bot-service, dan datanya terisolasi antar organisasi.
  *
- * account-service dipalsukan — hanya endpoint kunci publiknya yang dipakai
- * verifikasi lokal. Token ditandatangani kunci yang diterbitkan test ini
+ * account-service dipalsukan — endpoint kunci publik untuk verifikasi JWT
+ * secara lokal, dan /auth/whoami untuk memintrospeksi X-API-Key mentah. Token ditandatangani kunci yang diterbitkan test ini
  * sendiri, jadi pengujian TIDAK bergantung pada kredensial siapa pun dan bisa
  * dijalankan siapa saja, kapan saja.
  */
@@ -40,6 +40,10 @@ const token = (over = {}) =>
 // bermasalah (bukan kredensial klien yang salah).
 let stubBalasError = 0;
 
+// Kunci API → payload whoami. Test mendaftarkan pasangannya sebelum memakai;
+// kunci yang tak terdaftar dibalas 401 oleh stub.
+const stubWhoami = new Map();
+
 /** account-service tiruan: cukup melayani kunci publiknya. */
 function stubAccountService() {
   return new Promise((resolve) => {
@@ -48,6 +52,18 @@ function stubAccountService() {
         res.statusCode = stubBalasError;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ success: false, message: 'account-service sedang bermasalah' }));
+        return;
+      }
+      if (req.url.startsWith('/api/v1/auth/whoami')) {
+        const data = stubWhoami.get(req.headers['x-api-key']);
+        if (!data) {
+          res.statusCode = 401;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, message: 'API key tidak valid' }));
+          return;
+        }
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ success: true, data }));
         return;
       }
       if (req.url.startsWith('/api/v1/auth/public-key')) {
@@ -133,6 +149,90 @@ test('MODEL 3 — system account WAJIB menyebut organisasi', async () => {
   });
   assert.strictEqual(dengan.status, 200);
   assert.strictEqual(dengan.body.data.length, 1, 'system account melihat org yang ia sebut');
+});
+
+/* ================== MODEL 2b: X-API-Key mentah ================== */
+//
+// Jalur kredensial ketiga: kunci API bukan JWT dan tidak bisa diverifikasi
+// secara lokal, jadi wa-bot memintrospeksinya lewat /auth/whoami di
+// account-service — stub di atas melayani endpoint itu. Organisasi untuk
+// penyaringan tenant diambil dari org_id pada respons whoami, BUKAN dari
+// header, persis seperti klaim org_id pada token.
+
+const KUNCI_C = 'kunci-org-c';
+
+test('MODEL 2b — X-API-Key diterima, organisasi diambil dari whoami', async () => {
+  stubWhoami.set(KUNCI_C, {
+    user_id: 'svc-c',
+    org_id: 'org-C',
+    principal_type: 'service',
+    permissions: ['wa-bot:*'],
+    session_id: null,
+    expires_at: null,
+  });
+
+  // org-C masih kosong — request pertama membuktikan autentikasi lolos.
+  const awal = await req('/api/templates', { headers: { 'X-API-Key': KUNCI_C } });
+  assert.strictEqual(awal.status, 200, JSON.stringify(awal.body));
+  assert.strictEqual(awal.body.data.length, 0);
+
+  // Tulis data sebagai org-C lewat kunci API-nya.
+  const buat = await req('/api/templates', {
+    method: 'POST',
+    headers: { 'X-API-Key': KUNCI_C },
+    body: { name: 'Punya C', textContent: 'halo dari svc' },
+  });
+  assert.strictEqual(buat.status, 201, JSON.stringify(buat.body));
+
+  // org-C hanya melihat miliknya sendiri — template org-A dari MODEL 1 tidak
+  // ikut tampil walau keduanya ada di database yang sama.
+  const lihat = await req('/api/templates', { headers: { 'X-API-Key': KUNCI_C } });
+  assert.strictEqual(lihat.body.data.length, 1, 'template org-A tidak boleh bocor ke org-C');
+});
+
+test('header organisasi tidak menggeser org milik X-API-Key', async () => {
+  const r = await req('/api/templates', {
+    headers: { 'X-API-Key': KUNCI_C, 'X-Organization-Id': 'org-A' },
+  });
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(r.body.data.length, 1, 'org tetap org-C dari whoami, bukan org-A dari header');
+});
+
+test('X-API-Key + Bearer bersamaan → 400', async () => {
+  const r = await req('/api/templates', {
+    headers: { ...bearer(token({ org_id: 'org-A' })), 'X-API-Key': KUNCI_C },
+  });
+  assert.strictEqual(r.status, 400, 'dua kredensial sekaligus harus ditolak eksplisit');
+  assert.match(r.body.error, /salah satu saja/);
+});
+
+test('X-API-Key tanpa izin wa-bot:* → 403', async () => {
+  stubWhoami.set('kunci-tipis', {
+    user_id: 'svc-tipis',
+    org_id: 'org-C',
+    principal_type: 'service',
+    permissions: ['email:*'],
+    session_id: null,
+    expires_at: null,
+  });
+  const r = await req('/api/templates', { headers: { 'X-API-Key': 'kunci-tipis' } });
+  assert.strictEqual(r.status, 403);
+});
+
+test('X-API-Key tak dikenal → 401', async () => {
+  const r = await req('/api/templates', { headers: { 'X-API-Key': 'kunci-ngasal' } });
+  assert.strictEqual(r.status, 401);
+});
+
+test('gangguan account-service di jalur X-API-Key → 503, bukan 401', async () => {
+  // Kunci ini sengaja belum pernah dipakai — tidak ada di whoamiCache.
+  stubBalasError = 500;
+  try {
+    const r = await req('/api/templates', { headers: { 'X-API-Key': 'kunci-saat-down' } });
+    assert.strictEqual(r.status, 503, 'upstream down seharusnya jadi 503');
+  } finally {
+    stubBalasError = 0;
+  }
 });
 
 /* ============================ isolasi & penolakan ============================ */
