@@ -91,15 +91,20 @@ jobs:
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      # Bundle source. Yang di-exclude = state (db/, uploads/, var/,
-      # .wwebjs_auth/) + runtime lokal (node_modules/, .env) — semuanya
-      # sudah/baru ada di host dan tidak boleh ditimpa dari CI.
+      # Bundle source. Yang di-exclude = STATE FILE (db/*.db*, uploads/, var/,
+      # .wwebjs_auth/) + runtime lokal (node_modules/, .env). PERHATIAN: jangan
+      # exclude direktori db/ utuh — db/migrations/*.sql adalah kode sumber yang
+      # dibutuhkan runner migrasi saat boot. Semua state di atas sudah/baru ada
+      # di host dan tidak boleh ditimpa dari CI.
       - name: Bundle source
         run: |
           tar czf /tmp/wa-bot-bundle.tgz \
             --exclude=node_modules \
             --exclude=.git \
-            --exclude=db \
+            --exclude='db/*.db' \
+            --exclude='db/*.db-journal' \
+            --exclude='db/*.db-wal' \
+            --exclude='db/*.db-shm' \
             --exclude=uploads \
             --exclude=var \
             --exclude=.wwebjs_auth \
