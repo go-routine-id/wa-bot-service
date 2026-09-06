@@ -53,6 +53,14 @@ if (config.docsUser && config.docsPassword) {
   console.log('[docs] nonaktif — SWAGGER_USER / SWAGGER_PASSWORD belum diisi');
 }
 
+// Health gate untuk proses deploy (CI/CD): sengaja DI LUAR /api supaya tidak
+// tersentuh authMiddleware — gate butuh sinyal "proses hidup dan melayani HTTP"
+// walau tanpa kredensial apa pun. Sengaja tidak menunggu koneksi WhatsApp:
+// deploy perdana boleh sehat sebelum sesi di-scan.
+app.get('/health', (_req, res) => {
+  res.json({ status: 'ok', uptime: Math.round(process.uptime()) });
+});
+
 app.use('/uploads/templates', nosniff, express.static(path.join(config.uploadDir, 'templates')));
 app.use('/uploads/broadcasts', nosniff, express.static(path.join(config.uploadDir, 'broadcasts')));
 // API di-polling frontend tiap 2.5 detik → larang caching kondisional: 304

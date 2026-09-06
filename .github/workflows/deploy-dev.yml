@@ -1,0 +1,128 @@
+name: Deploy DEV (wa-bot-service, pm2)
+
+# Lane deploy wa-bot-service ke environment DEV ikavia-box, pola pm2-flat
+# (meniru notification-service). Service STATEFUL: db/, uploads/, dan auth
+# session WhatsApp hidup di DEPLOY_DIR di host dan tidak pernah lewat CI.
+#
+# Alur:
+#   1. build-test — npm ci + npm test di runner GitHub-hosted (gate; kode
+#      rusak tidak sampai ke box).
+#   2. Bundle source (exclude node_modules, state, .env) → scp ke host.
+#   3. ssh ... bash -s < scripts/deploy-wa-bot-dev-remote.sh:
+#      ekstrak → npm ci --omit=dev → pm2 restart/start → health gate.
+#
+# Trigger: push ke branch `ikavia-dev` + workflow_dispatch.
+# Konvensi branch ikavia: <business>-<env> — satu branch satu env.
+#
+# Setup GitHub (sekali, di repo go-routine-id/wa-bot-service):
+#   Environment `ikavia-dev` (org plan Free: required reviewers TIDAK
+#   tersedia — push = deploy langsung):
+#     SSH_HOST           remote.ikavia.com
+#     SSH_USER           dev
+#     SSH_KEY            private key deploy (pair-nya di authorized_keys host)
+#     SSH_KNOWN_HOSTS    output `ssh-keyscan <SSH_HOST>` — fail-closed bila kosong
+#   Optional repo/environment variable:
+#     DEPLOY_DIR         default /home/dev/apps/wa-bot-service-dev
+
+on:
+  push:
+    branches: [ikavia-dev]
+  workflow_dispatch:
+
+# Deploy berurutan tidak boleh di-interrupt (restart pm2 + gate bukan
+# operasi yang boleh berhenti di tengah).
+concurrency:
+  group: deploy-wa-bot-dev-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  APP_NAME: wa-bot-service-dev
+
+jobs:
+  build-test:
+    name: Install & test (gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # Gate utama (blocking): dependency terpasang bersih dari lockfile
+      # dan seluruh test lulus sebelum apa pun disalin ke host.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test
+        run: npm test
+
+  deploy:
+    name: Deploy (pm2) → ikavia-dev
+    needs: build-test
+    runs-on: ubuntu-latest
+    environment: ikavia-dev
+    steps:
+      - uses: actions/checkout@v4
+
+      # Native ssh — bukan action Docker (appleboy) — supaya lane ini jalan
+      # di runner mana pun, termasuk self-hosted hardened tanpa akses Docker.
+      # Fail-closed: tanpa SSH_KNOWN_HOSTS workflow menolak jalan (anti MITM).
+      - name: Setup SSH (fail-closed)
+        env:
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_KNOWN_HOSTS:-}" ]; then
+            echo "✗ Secret SSH_KNOWN_HOSTS belum di-set di environment ikavia-dev" >&2
+            echo "  Isi dengan output: ssh-keyscan <SSH_HOST>" >&2
+            exit 1
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      # Bundle source. Yang di-exclude = state (db/, uploads/, var/,
+      # .wwebjs_auth/) + runtime lokal (node_modules/, .env) — semuanya
+      # sudah/baru ada di host dan tidak boleh ditimpa dari CI.
+      - name: Bundle source
+        run: |
+          tar czf /tmp/wa-bot-bundle.tgz \
+            --exclude=node_modules \
+            --exclude=.git \
+            --exclude=db \
+            --exclude=uploads \
+            --exclude=var \
+            --exclude=.wwebjs_auth \
+            --exclude=.env \
+            .
+
+      - name: Upload bundle ke host (native scp)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          WORK_DIR="/tmp/wa-bot-service-dev-deploy"
+          ssh "$SSH_USER@$SSH_HOST" "rm -rf '$WORK_DIR' && mkdir -p '$WORK_DIR'"
+          scp /tmp/wa-bot-bundle.tgz "$SSH_USER@$SSH_HOST:$WORK_DIR/bundle.tgz"
+
+      - name: Deploy di host (ekstrak + npm ci + pm2 + health gate)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '/home/dev/apps/wa-bot-service-dev' }}
+          APP_NAME: ${{ env.APP_NAME }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ssh "$SSH_USER@$SSH_HOST" \
+            DEPLOY_DIR="$DEPLOY_DIR" APP_NAME="$APP_NAME" GITHUB_SHA="$GITHUB_SHA" \
+            bash -s < scripts/deploy-wa-bot-dev-remote.sh
