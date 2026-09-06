@@ -20,6 +20,10 @@ module.exports = {
       name: 'wa-bot-service-dev',
       script: 'src/server.js',
       cwd: __dirname,
+      // PM2 daemon di box jalan di bawah Node 20; tanpa interpreter eksplisit
+      // proses baru mewarisi node 20 → better-sqlite3@13 (engines >=22) SIGSEGV
+      // di load. Deploy script mengisi WABOT_NODE_BIN dari `nvm which 22`.
+      interpreter: process.env.WABOT_NODE_BIN || 'node',
       instances: 1,
       exec_mode: 'fork',
       autorestart: true,

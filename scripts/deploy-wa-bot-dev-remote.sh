@@ -17,6 +17,14 @@ DEPLOY_DIR="${DEPLOY_DIR:-/home/dev/apps/wa-bot-service-dev}"
 [ -f "$HOME/.profile" ] && source "$HOME/.profile" || true
 [ -f "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh" || true
 
+# ── Runtime Node 22 ─────────────────────────────────────
+# better-sqlite3@13 (engines >=22) SIGSEGV di Node 20 — dan pm2 daemon box
+# jalan di node 20, jadi interpreter node 22 harus eksplisit (lewat
+# WABOT_NODE_BIN → ecosystem.config.js). Idempotent; default alias nvm
+# TIDAK diubah — app lain di box tetap di node 20.
+nvm install 22 >/dev/null
+export WABOT_NODE_BIN="$(nvm which 22)"
+
 # ── Preconditions ────────────────────────────────────────
 if [ ! -f "$WORK_DIR/bundle.tgz" ]; then
   echo "✗ Bundle tidak ada di $WORK_DIR setelah scp" >&2
@@ -45,11 +53,9 @@ npm ci --omit=dev
 npx puppeteer browsers install chrome-headless-shell
 
 # ── (Re)start pm2 ────────────────────────────────────────
-if pm2 describe "$APP_NAME" > /dev/null 2>&1; then
-  pm2 restart "$APP_NAME" --update-env
-else
-  pm2 start ecosystem.config.js --only "$APP_NAME"
-fi
+# startOrReload (bukan `pm2 restart` polos): baca ulang ecosystem.config.js —
+# interpreter WABOT_NODE_BIN ikut terpasang untuk start DAN restart.
+pm2 startOrReload ecosystem.config.js --only "$APP_NAME" --update-env
 pm2 save
 
 PORT="$(grep -E '^PORT=' "$DEPLOY_DIR/.env" | tail -1 | cut -d= -f2 || true)"

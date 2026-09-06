@@ -50,7 +50,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Versi runtime mengikuti .nvmrc. Node 20 TIDAK bisa dipakai:
+          # better-sqlite3@13 (engines >=22) SIGSEGV di bawah Node 22.
+          node-version-file: .nvmrc
           cache: npm
 
       # Gate utama (blocking): dependency terpasang bersih dari lockfile
