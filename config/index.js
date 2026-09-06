@@ -70,6 +70,17 @@ const config = {
   // Server mencetak peringatan mencolok saat kosong — jangan sampai terlewat
   // di production: API ini bisa mengirim WhatsApp dari nomor yang terhubung.
   accountServiceUrl: (process.env.ACCOUNT_SERVICE_URL || '').trim().replace(/\/+$/, ''),
+  // URL account-service yang disajikan ke BROWSER lewat /api/auth-info —
+  // frontend memakainya untuk mengarahkan pengguna ke halaman login. Hampir
+  // selalu BERBEDA dari accountServiceUrl di atas: backend menjangkau
+  // account-service lewat jaringan internal (loopback/private), sedangkan
+  // browser harus diarahkan ke ingress publik (mis.
+  // https://account.dev.ikavia.com). Tanpa env ini, frontend di domain publik
+  // akan dilempar ke alamat internal yang tidak bisa dijangkau browser-nya.
+  // Kosong = jatuh ke accountServiceUrl (perilaku lama: satu mesin).
+  accountServicePublicUrl:
+    (process.env.ACCOUNT_SERVICE_PUBLIC_URL || '').trim().replace(/\/+$/, '') ||
+    (process.env.ACCOUNT_SERVICE_URL || '').trim().replace(/\/+$/, ''),
   // Permission yang wajib dipegang untuk memakai API ini. Service key `wa-bot`
   // di account-service otomatis menjadi `wa-bot:*` di dalam JWT.
   authRequiredPermission: (process.env.AUTH_REQUIRED_PERMISSION || 'wa-bot:*').trim(),

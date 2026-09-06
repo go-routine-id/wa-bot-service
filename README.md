@@ -217,6 +217,14 @@ seluruh datanya terisolasi per **organisasi**.
 mencolok saat boot. Jangan dipakai di production: API ini bisa mengirim
 WhatsApp dari nomor yang terhubung.
 
+`ACCOUNT_SERVICE_URL` adalah alamat yang dijangkau **server** untuk verifikasi
+JWT — hampir selalu loopback/private network. Frontend tahu ke mana harus
+login lewat `GET /api/auth-info`, dan endpoint itu sengaja menyajikan
+**`ACCOUNT_SERVICE_PUBLIC_URL`** (bila di-set) alih-alih URL internal — browser
+pengunjung domain publik tidak bisa menjangkau loopback milik server. Tanpa
+env itu auth-info jatuh ke `ACCOUNT_SERVICE_URL`, perilaku lama untuk
+deployment frontend-backend di satu mesin.
+
 ### Ketiga model identitas didukung
 
 | Model | Kredensial | Organisasi (tenant) diambil dari |

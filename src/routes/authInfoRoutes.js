@@ -15,7 +15,9 @@ const router = express.Router();
  *
  * Yang dibagikan hanya yang memang publik: alamat penerbit identitas dan nama
  * izin yang dituntut. Keduanya sudah terlihat di pesan 401 dan di kode frontend,
- * jadi tidak ada rahasia yang bocor di sini.
+ * jadi tidak ada rahasia yang bocor di sini. Alamat yang disajikan adalah
+ * accountServicePublicUrl — versi yang bisa dijangkau BROWSER (ingress publik),
+ * bukan URL internal yang dipakai server untuk verifikasi JWT.
  */
 /**
  * @openapi
@@ -44,7 +46,7 @@ router.get('/auth-info', (_req, res) => {
   res.json({
     data: {
       enabled: !!config.accountServiceUrl,
-      accountServiceUrl: config.accountServiceUrl || null,
+      accountServiceUrl: config.accountServicePublicUrl || null,
       requiredPermission: config.accountServiceUrl ? config.authRequiredPermission : null,
     },
   });
