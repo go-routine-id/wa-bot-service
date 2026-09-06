@@ -17,14 +17,6 @@ DEPLOY_DIR="${DEPLOY_DIR:-/home/dev/apps/wa-bot-service-dev}"
 [ -f "$HOME/.profile" ] && source "$HOME/.profile" || true
 [ -f "$HOME/.nvm/nvm.sh" ] && source "$HOME/.nvm/nvm.sh" || true
 
-# ── Runtime Node 22 ─────────────────────────────────────
-# better-sqlite3@13 (engines >=22) SIGSEGV di Node 20 — dan pm2 daemon box
-# jalan di node 20, jadi interpreter node 22 harus eksplisit (lewat
-# WABOT_NODE_BIN → ecosystem.config.js). Idempotent; default alias nvm
-# TIDAK diubah — app lain di box tetap di node 20.
-nvm install 22 >/dev/null
-export WABOT_NODE_BIN="$(nvm which 22)"
-
 # ── Preconditions ────────────────────────────────────────
 if [ ! -f "$WORK_DIR/bundle.tgz" ]; then
   echo "✗ Bundle tidak ada di $WORK_DIR setelah scp" >&2
@@ -39,6 +31,26 @@ fi
 
 # ── Ekstrak source (state tidak ikut bundle) ─────────────
 tar xzf "$WORK_DIR/bundle.tgz" -C "$DEPLOY_DIR"
+
+# ── Runtime Node 22 (lokal, tanpa nvm/sudo) ──────────────
+# System node box (/usr/bin/node) versi 20 — di bawah engines
+# better-sqlite3@13 (>=22) → native module SIGSEGV saat load. Runtime 22
+# dipasang lokal di .runtime/ dalam DEPLOY_DIR dari tarball resmi
+# nodejs.org; system node TIDAK diutak-atik — app lain di box aman.
+# Versi major mengikuti .nvmrc yang ikut ter-bundle. Idempotent.
+NODE_MAJOR="$(tr -dc '0-9' < "$DEPLOY_DIR/.nvmrc" 2>/dev/null | cut -c1-2)"
+NODE_MAJOR="${NODE_MAJOR:-22}"
+RUNTIME_DIR="$DEPLOY_DIR/.runtime/node-v${NODE_MAJOR}"
+if [ ! -x "$RUNTIME_DIR/bin/node" ]; then
+  echo "→ Memasang runtime Node ${NODE_MAJOR} lokal di $RUNTIME_DIR"
+  DIST_URL="https://nodejs.org/dist/latest-v${NODE_MAJOR}.x"
+  TARBALL="$(curl -fsSL "$DIST_URL/" | grep -oE "node-v${NODE_MAJOR}\.[0-9]+\.[0-9]+-linux-x64\.tar\.xz" | head -1)"
+  [ -n "$TARBALL" ] || { echo "✗ Gagal resolve tarball Node ${NODE_MAJOR} dari $DIST_URL" >&2; exit 1; }
+  mkdir -p "$RUNTIME_DIR"
+  curl -fsSL "$DIST_URL/$TARBALL" | tar xJ -C "$RUNTIME_DIR" --strip-components=1
+fi
+export PATH="$RUNTIME_DIR/bin:$PATH"
+export WABOT_NODE_BIN="$RUNTIME_DIR/bin/node"
 
 # ── Dependencies ─────────────────────────────────────────
 # better-sqlite3 pakai prebuilt binary untuk node20/linux-x64 — tanpa
