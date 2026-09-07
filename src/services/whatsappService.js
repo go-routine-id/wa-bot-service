@@ -18,9 +18,11 @@ const RECONNECT_DELAYS = [3000, 5000, 10000, 20000, 30000]; // ms
 const PAIRING_CODE_INTERVAL_MS = 3 * 60 * 1000;
 
 // Batas menunggu start() yang masih in-flight sebelum memulai yang baru, dan
-// batas menutup client. Keduanya dijaga kecil supaya total waktu handler HTTP
-// tetap jauh di bawah timeout fetch browser.
-const START_SETTLE_TIMEOUT_MS = 8000;
+// batas menutup client. 45 dtk menutupi initialize() Chrome yang lambat
+// (30-40 dtk di mesin kecil) — batas 8 dtk dulu membuat rescan/pairing melempar
+// 409 palsu padahal start masih sehat. Frontend tidak punya fetch timeout,
+// jadi handler boleh menunggu selama ini.
+const START_SETTLE_TIMEOUT_MS = 45000;
 const DESTROY_TIMEOUT_MS = 8000;
 
 /**
