@@ -7,6 +7,7 @@ const { Client, LocalAuth, MessageMedia } = require('whatsapp-web.js');
 const config = require('../../config');
 const sessionRepository = require('../repositories/sessionRepository');
 const { HttpError } = require('../utils/httpError');
+const { readProcess } = require('../utils/chromeProcess');
 
 // Backoff reconnect untuk sesi established (blip koneksi / page close). Cap 30s,
 // ulang terus sampai stopReconnect (destroy/logout/delete) atau auth_failure.
@@ -698,6 +699,23 @@ async function destroyAll() {
 
 /* ---------------- status / read ---------------- */
 
+/**
+ * Diagnostik proses Chrome milik sesi — sengaja on-demand lewat endpoint khusus
+ * (GET /:id/chrome), bukan ikut respons /api/sessions, supaya daftar sesi tetap
+ * ringan. PID diambil dari handle puppeteer yang sudah dipegang backend
+ * (whatsapp-web.js mengekspose Browser-nya di client.pupBrowser), jadi tidak
+ * perlu menebak pemetaan proses → sesi dari luar. Sesi tanpa browser aktif
+ * (belum pernah di-start / sudah terputus) → { alive: false }.
+ */
+async function getChromeInfo(id, orgId) {
+  assertOwned(id, orgId);
+  const sess = registry.get(id);
+  const pid = sess?.client?.pupBrowser?.process()?.pid ?? null;
+  if (!pid) return { alive: false, pid: null };
+  const info = await readProcess(pid);
+  return { pid, ...info };
+}
+
 /** Status runtime satu sesi. Otorisasi dilakukan pemanggil (assertOwned). */
 function getStatus(id) {
   const row = sessionRepository.findByIdUnscoped(id);
@@ -763,6 +781,7 @@ module.exports = {
   renameSession,
   deleteSession,
   getStatus,
+  getChromeInfo,
   listSessions,
   sessionExists,
   sessionExistsForOrg,

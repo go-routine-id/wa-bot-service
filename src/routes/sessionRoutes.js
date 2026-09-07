@@ -62,6 +62,24 @@ router.post('/', sessionController.add);
 router.get('/:id/status', sessionController.status);
 /**
  * @openapi
+ * /api/sessions/{id}/chrome:
+ *   get:
+ *     tags: [Sesi WhatsApp]
+ *     summary: Diagnostik proses Chrome sesi
+ *     description: |
+ *       On-demand (tidak ikut polling daftar sesi): PID, umur proses, rata-rata
+ *       pemakaian CPU lifetime, dan memori browser Chromium milik sesi ini.
+ *       Berguna untuk membedakan sesi yang benar-benar hidup dari proses chrome
+ *       yang tersangkut. Sesi tanpa browser aktif → `data = { alive: false, pid: null }`.
+ *     parameters:
+ *       - { in: path, name: id, required: true, schema: { type: string } }
+ *     responses:
+ *       200: { description: Metrik proses Chrome }
+ *       404: { $ref: '#/components/responses/NotFound' }
+ */
+router.get('/:id/chrome', sessionController.chrome);
+/**
+ * @openapi
  * /api/sessions/{id}:
  *   patch:
  *     tags: [Sesi WhatsApp]

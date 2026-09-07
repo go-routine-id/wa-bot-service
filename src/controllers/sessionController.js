@@ -48,6 +48,12 @@ const sessionController = {
     res.json({ data: s });
   },
 
+  /** Diagnostik proses Chrome sesi (on-demand): pid, umur, rata-rata cpu, memori. */
+  chrome: wrap(async (req, res) => {
+    const data = await whatsappService.getChromeInfo(req.params.id, org(req));
+    res.json({ data });
+  }),
+
   rescan: wrap(async (req, res) => {
     await whatsappService.rescan(req.params.id, org(req));
     res.json({ ok: true });

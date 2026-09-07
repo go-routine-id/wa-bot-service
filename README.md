@@ -191,6 +191,7 @@ Perilaku ini berlaku **per sesi**:
 | PATCH | `/api/sessions/:id` | rename `{ name }` (id sesi tetap — broadcast lama ikut menampilkan nama baru) |
 | DELETE | `/api/sessions/:id` | hapus sesi + kredensial; broadcast pending/running yang memakainya dibatalkan |
 | GET | `/api/sessions/:id/status` | status satu sesi |
+| GET | `/api/sessions/:id/chrome` | diagnostik on-demand proses Chromium sesi (pid, umur, rata-rata cpu, memori); sengaja tidak ikut respons list supaya polling ringan |
 | POST | `/api/sessions/:id/rescan` | buat ulang koneksi sesi (QR baru / hubungkan ulang) |
 | POST | `/api/sessions/:id/pairing-code` | minta kode pairing 8 karakter `{ phone }` (hanya sesi yang belum ter-pair) |
 | POST | `/api/sessions/:id/logout` | logout sesi dari WhatsApp (kredensial dihapus, baris tetap) |
