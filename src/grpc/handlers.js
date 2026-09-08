@@ -26,7 +26,10 @@ const STATUS_AKHIR = new Set(['completed', 'failed', 'cancelled']);
 
 const broadcastHandlers = {
   CreateBroadcast: terlindungi(async ({ call, auth }, callback) => {
-    const hasil = broadcastService.create(createRequestKeBody(call.request), auth.orgId);
+    const hasil = broadcastService.create(createRequestKeBody(call.request), auth.orgId, {
+      source: 'grpc',
+      accountId: auth.accountId,
+    });
     callback(null, broadcastKeProto(hasil));
   }),
 
@@ -60,7 +63,8 @@ const broadcastHandlers = {
     const hasil = broadcastService.retry(
       Number(call.request.id),
       { sessionId: call.request.session_id || undefined },
-      auth.orgId
+      auth.orgId,
+      { source: 'grpc', accountId: auth.accountId }
     );
     callback(null, broadcastKeProto(hasil));
   }),

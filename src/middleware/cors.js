@@ -19,7 +19,10 @@ function corsMiddleware(req, res, next) {
     // lintas-origin. Tanpa ini preflight menolak dan tombol Rename mati total.
     // Daftar ini harus mencakup SEMUA metode yang dipakai routes/.
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, Authorization, X-Request-ID');
+    // X-Client WAJIB tercantum: UI web mengirim penanda 'web' lewat header ini
+    // (dipakai untuk pencatatan sumber broadcast). Daftar ini eksplisit — tanpa
+    // entri itu preflight browser menolak dan SELURUH request UI gagal.
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-API-Key, Authorization, X-Request-ID, X-Client');
     // Tanpa Expose-Headers, JavaScript di browser TIDAK bisa membaca header ini
     // pada request lintas-origin — id-nya terkirim tapi tak terjangkau.
     res.setHeader('Access-Control-Expose-Headers', 'X-Request-ID');

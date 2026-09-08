@@ -30,8 +30,9 @@ const whatsappService = require('./whatsappService');
  * Inti pembuatan broadcast (dipakai create & retry):
  * insert row → copy media → insert recipient → update counts invalid → dispatch.
  * recipientItems: [{ number, status, error? }] (status 'pending'/'failed').
+ * source/ownerAccountId: stamp asal pembuatan (web/api/grpc) & id akun pembuat.
  */
-function createCore({ templateId, sessionId, mode, ratePerMinute, delaySeconds = null, messageText, mediaPath, recipientItems, orgId }) {
+function createCore({ templateId, sessionId, mode, ratePerMinute, delaySeconds = null, messageText, mediaPath, recipientItems, orgId, source = 'api', ownerAccountId = null }) {
   const invalidCount = recipientItems.filter((item) => item.status === 'failed').length;
 
   const broadcast = broadcastRepository.create({
@@ -44,6 +45,8 @@ function createCore({ templateId, sessionId, mode, ratePerMinute, delaySeconds =
     mediaPath: null,
     totalRecipients: recipientItems.length,
     orgId,
+    source,
+    ownerAccountId,
   });
 
   // Copy media ke folder broadcast agar hapus template tidak merusak history
@@ -95,7 +98,7 @@ const broadcastService = {
    * Buat broadcast: validasi → resolve pesan dari template/teks langsung →
    * createCore (insert/copy/recipient/dispatch).
    */
-  create(body, orgId) {
+  create(body, orgId, meta = {}) {
     const input = validateBroadcastCreate(body);
     // Sesi pengirim wajib ADA (bukan sekadar string non-empty) — cegah broadcast
     // mengarah ke sesi yang sudah dihapus / tidak pernah ada.
@@ -134,6 +137,8 @@ const broadcastService = {
       mediaPath,
       recipientItems,
       orgId,
+      source: meta.source,
+      ownerAccountId: meta.accountId,
     });
   },
 
@@ -143,7 +148,7 @@ const broadcastService = {
    * Mendukung override `sessionId` baru bila sesi asal sudah dihapus atau ingin dialihkan.
    * History broadcast asli tetap utuh; retry tampil sebagai entri baru yang transparan.
    */
-  retry(id, { sessionId } = {}, orgId) {
+  retry(id, { sessionId } = {}, orgId, meta = {}) {
     const source = broadcastRepository.findById(id, orgId);
     if (!source) throw new HttpError(404, 'Broadcast tidak ditemukan');
 
@@ -188,6 +193,8 @@ const broadcastService = {
         status: 'pending',
       })),
       orgId,
+      source: meta.source,
+      ownerAccountId: meta.accountId,
     });
 
     console.log(
@@ -271,7 +278,15 @@ const broadcastService = {
    * (gRPC, skrip, job) yang lupa meniru penjaga itu langsung menarik seluruh
    * tabel, dan tidak ada yang menegurnya.
    */
-  list({ limit, offset } = {}, orgId) {
+  list({ limit, offset } = {}, orgId, { allOrgs = false } = {}) {
+    // allOrgs = pandangan lintas tenant untuk admin platform. Gate izin '*'
+    // ada di controller; di sini paginasi tetap di-clamp untuk kedua jalur.
+    if (allOrgs) {
+      return broadcastRepository.listUnscoped({
+        limit: clampLimit(limit),
+        offset: clampOffset(offset),
+      });
+    }
     return broadcastRepository.list({
       limit: clampLimit(limit),
       offset: clampOffset(offset),
@@ -279,8 +294,11 @@ const broadcastService = {
     });
   },
 
-  getDetail(id, orgId) {
-    const broadcast = broadcastRepository.findById(id, orgId);
+  getDetail(id, orgId, { allOrgs = false } = {}) {
+    // allOrgs memakai findByIdUnscoped — gate izin '*' ada di controller.
+    const broadcast = allOrgs
+      ? broadcastRepository.findByIdUnscoped(id)
+      : broadcastRepository.findById(id, orgId);
     if (!broadcast) throw new HttpError(404, 'Broadcast tidak ditemukan');
     const recipients = recipientRepository.findByBroadcastId(id);
     return { broadcast, recipients };

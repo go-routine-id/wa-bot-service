@@ -1,6 +1,7 @@
 'use strict';
 
 const broadcastService = require('../services/broadcastService');
+const { HttpError } = require('../utils/httpError');
 
 function parsePagination(query) {
   const limit = Math.min(Math.max(Number.parseInt(query?.limit ?? '50', 10) || 50, 1), 500);
@@ -11,19 +12,42 @@ function parsePagination(query) {
 /** Organisasi pemanggil — selalu ada, dipasang middleware auth. */
 const org = (req) => req.auth.orgId;
 
+/**
+ * ?scope=all membuka pandangan lintas organisasi — khusus akun platform admin
+ * (izin '*'). Gerbang ada DI SINI, bukan di service: non-admin yang memaksa
+ * param itu harus menerima 403, bukan diam-diam diperlakukan sebagai request
+ * biasa (fallback senyap = kebocoran model izin).
+ */
+function assertScopeAllAllowed(req) {
+  const permissions = req.auth?.permissions;
+  if (!Array.isArray(permissions) || !permissions.includes('*')) {
+    throw new HttpError(403, 'scope=all khusus akun dengan izin platform admin (*)');
+  }
+}
+
 const broadcastController = {
   create(req, res) {
-    const data = broadcastService.create(req.body, org(req));
+    // Sumber pembuatan: UI web mengirim X-Client: web; selain itu 'api'.
+    // Nilai di-whitelist di sini — header bebas tak boleh menulis label seenaknya.
+    const source = req.get('x-client') === 'web' ? 'web' : 'api';
+    const data = broadcastService.create(req.body, org(req), {
+      source,
+      accountId: req.auth.accountId ?? null,
+    });
     res.status(201).json({ data });
   },
 
   list(req, res) {
     const { limit, offset } = parsePagination(req.query);
-    res.json({ data: broadcastService.list({ limit, offset }, org(req)) });
+    const allOrgs = req.query?.scope === 'all';
+    if (allOrgs) assertScopeAllAllowed(req);
+    res.json({ data: broadcastService.list({ limit, offset }, org(req), { allOrgs }) });
   },
 
   detail(req, res) {
-    const data = broadcastService.getDetail(Number(req.params.id), org(req));
+    const allOrgs = req.query?.scope === 'all';
+    if (allOrgs) assertScopeAllAllowed(req);
+    const data = broadcastService.getDetail(Number(req.params.id), org(req), { allOrgs });
     res.json({ data });
   },
 
@@ -53,10 +77,12 @@ const broadcastController = {
   },
 
   retry(req, res) {
+    const source = req.get('x-client') === 'web' ? 'web' : 'api';
     const data = broadcastService.retry(
       Number(req.params.id),
       { sessionId: req.body?.sessionId },
-      org(req)
+      org(req),
+      { source, accountId: req.auth.accountId ?? null }
     );
     res.status(201).json({ data });
   },

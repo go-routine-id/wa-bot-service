@@ -48,6 +48,8 @@ function broadcastKeProto(b) {
     created_at: teks(b.createdAt),
     started_at: teks(b.startedAt),
     finished_at: teks(b.finishedAt),
+    source: teks(b.source),
+    owner_account_id: teks(b.ownerAccountId),
   };
 }
 

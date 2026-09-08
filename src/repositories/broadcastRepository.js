@@ -16,6 +16,7 @@ const COLUMNS = `b.id, b.template_id AS templateId, b.mode, b.rate_per_minute AS
   b.delay_seconds AS delaySeconds, b.message_text AS messageText, b.media_path AS mediaPath, b.status,
   b.total_recipients AS totalRecipients, b.sent_count AS sentCount, b.failed_count AS failedCount,
   b.session_id AS sessionId, s.name AS sessionName,
+  b.source AS source, b.owner_org_id AS ownerOrgId, b.owner_account_id AS ownerAccountId,
   (SELECT COUNT(*) FROM broadcast_recipients br
      WHERE br.broadcast_id = b.id
        AND br.status = 'failed'
@@ -44,13 +45,15 @@ const broadcastRepository = {
     mediaPath = null,
     totalRecipients,
     orgId,
+    source = 'api',
+    ownerAccountId = null,
   }) {
     requireOrg(orgId, 'broadcastRepository.create');
     const info = db
       .prepare(
         `INSERT INTO broadcasts
-           (template_id, session_id, mode, rate_per_minute, delay_seconds, message_text, media_path, total_recipients, owner_org_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           (template_id, session_id, mode, rate_per_minute, delay_seconds, message_text, media_path, total_recipients, owner_org_id, source, owner_account_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         templateId,
@@ -61,7 +64,9 @@ const broadcastRepository = {
         messageText,
         mediaPath,
         totalRecipients,
-        orgId
+        orgId,
+        source,
+        ownerAccountId
       );
     return this.findById(info.lastInsertRowid, orgId);
   },
@@ -91,6 +96,17 @@ const broadcastRepository = {
         `SELECT ${COLUMNS} ${FROM} WHERE b.owner_org_id = ? ORDER BY b.id DESC LIMIT ? OFFSET ?`
       )
       .all(orgId, limit, offset);
+  },
+
+  /**
+   * TANPA penyaring organisasi — daftar lintas tenant untuk admin platform
+   * (izin '*'). Hanya boleh dipanggil lewat jalur yang SUDAH memeriksa izin itu
+   * (controller HTTP dengan ?scope=all); pemanggil lain wajib memakai list().
+   */
+  listUnscoped({ limit = 50, offset = 0 } = {}) {
+    return db
+      .prepare(`SELECT ${COLUMNS} ${FROM} ORDER BY b.id DESC LIMIT ? OFFSET ?`)
+      .all(limit, offset);
   },
 
   markRunning(id) {

@@ -23,6 +23,9 @@ const router = Router();
  *
  *       Nomor berformat salah tidak membatalkan seluruh broadcast — ia tercatat
  *       sebagai penerima berstatus `failed` supaya terlihat di riwayat.
+ *
+ *       Sumber pembuatan dicatat otomatis: UI web (header `X-Client: web`)
+ *       → `web`, jalur gRPC → `grpc`, selain itu → `api`.
  *     requestBody:
  *       required: true
  *       content:
@@ -51,9 +54,15 @@ router.post('/', broadcastController.create);
  *   get:
  *     tags: [Broadcast]
  *     summary: Riwayat broadcast
+ *     description: |
+ *       `?scope=all` membuka pandangan LINTAS ORGANISASI (read-only) —
+ *       khusus akun dengan izin platform admin (`*`). Akun lain menerima 403.
+ *     parameters:
+ *       - { in: query, name: scope, schema: { type: string, enum: [all] }, description: 'Lintas organisasi — khusus admin platform' }
  *     responses:
  *       200: { description: Daftar broadcast beserta ringkasan penerimanya }
  *       401: { $ref: '#/components/responses/Unauthorized' }
+ *       403: { description: scope=all tanpa izin admin platform }
  */
 router.get('/', broadcastController.list);
 /**
@@ -62,10 +71,13 @@ router.get('/', broadcastController.list);
  *   get:
  *     tags: [Broadcast]
  *     summary: Detail broadcast + status tiap penerima
+ *     description: '`?scope=all` membaca broadcast lintas organisasi — khusus admin platform (izin `*`).'
  *     parameters:
  *       - { in: path, name: id, required: true, schema: { type: integer } }
+ *       - { in: query, name: scope, schema: { type: string, enum: [all] }, description: 'Lintas organisasi — khusus admin platform' }
  *     responses:
  *       200: { description: Detail broadcast }
+ *       403: { description: scope=all tanpa izin admin platform }
  *       404: { $ref: '#/components/responses/NotFound' }
  */
 router.get('/:id', broadcastController.detail);

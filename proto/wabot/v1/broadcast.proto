@@ -127,6 +127,10 @@ message Broadcast {
   string created_at = 13;
   string started_at = 14;
   string finished_at = 15;
+  // Jalur pembuatan: web (UI), api (REST), grpc. Kosong = baris pra-pencatatan.
+  string source = 16;
+  // Id akun pembuat (klaim sub) — audit lintas organisasi untuk admin platform.
+  string owner_account_id = 17;
 }
 
 message Recipient {
