@@ -46,6 +46,21 @@ const AMBIGUOUS_PATTERNS = [
   'Protocol error',
 ];
 
+/**
+ * Nomor tujuan tidak terdaftar di WhatsApp.
+ *
+ * WhatsApp Web (frontend JS-nya sendiri, bukan library) melempar
+ * "No LID for users" ketika mencoba mengirim ke nomor yang tidak punya
+ * pemetaan LID — artinya nomor itu memang tidak terdaftar di WhatsApp.
+ * Terverifikasi di lapangan: nomor yang memicu error ini dicek manual dan
+ * benar-benar tidak punya akun WhatsApp.
+ *
+ * Bukan masalah sementara: mencoba ulang tidak akan mengubah apa pun.
+ */
+const NOT_REGISTERED_PATTERNS = [
+  'No LID',
+];
+
 function matches(message, patterns) {
   return patterns.some((p) => message.includes(p));
 }
@@ -73,6 +88,13 @@ function classifySendError(err) {
       // pesannya sudah sampai.
       message:
         'Koneksi ke WhatsApp Web terputus saat mengirim — pesan mungkin sudah terkirim, periksa dulu sebelum mengirim ulang',
+    };
+  }
+
+  if (matches(raw, NOT_REGISTERED_PATTERNS)) {
+    return {
+      retryable: false,
+      message: 'Nomor tidak terdaftar di WhatsApp',
     };
   }
 

@@ -47,3 +47,15 @@ test('nilai non-Error tidak membuat crash', () => {
   assert.strictEqual(classifySendError('boom').message, 'boom');
   assert.strictEqual(classifySendError(null).retryable, false);
 });
+
+test('"No LID for users" berarti nomor tidak terdaftar — tidak dicoba ulang', () => {
+  // Pesan asli dari broadcast prod #5: di-throw frontend WhatsApp Web sendiri
+  // (bukan library) ketika nomor tujuan tidak terdaftar di WhatsApp.
+  const asli =
+    'No LID for users (https://static.whatsapp.net/rsrc.php/v4/yr/r/WwCzmBwF6OP.js:84:180)';
+  const { retryable, message } = classifySendError(new Error(asli));
+  assert.strictEqual(retryable, false, 'mencoba ulang tidak akan mengubah nomor tak terdaftar');
+  assert.strictEqual(message, 'Nomor tidak terdaftar di WhatsApp');
+  // Rantai URL internal WhatsApp tidak boleh sampai ke pengguna.
+  assert.ok(!message.includes('static.whatsapp.net'), `pesan masih mentah: ${message}`);
+});
