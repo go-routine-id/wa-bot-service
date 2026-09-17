@@ -8,6 +8,7 @@ const config = require('../../config');
 const sessionRepository = require('../repositories/sessionRepository');
 const { HttpError } = require('../utils/httpError');
 const { readProcess } = require('../utils/chromeProcess');
+const { buildPuppeteerOptions } = require('../utils/puppeteerOptions');
 
 // Backoff reconnect untuk sesi established (blip koneksi / page close). Cap 30s,
 // ulang terus sampai stopReconnect (destroy/logout/delete) atau auth_failure.
@@ -364,10 +365,9 @@ async function start(id) {
   const promise = (async () => {
     const client = new Client({
       authStrategy: new LocalAuth({ dataPath: config.authDir, clientId: id }),
-      puppeteer: {
-        headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
-      },
+      // handleSIGINT/dll dimatikan di dalam — handler bawaan puppeteer
+      // berlomba dengan graceful shutdown server.js (lihat utils/puppeteerOptions).
+      puppeteer: buildPuppeteerOptions(),
       // Bila sesi diminta pairing lewat kode, library mendaftarkan event 'code'
       // (bukan 'qr') dan otomatis meminta kode ke WhatsApp saat initialize.
       ...(sess.pairingPhone
